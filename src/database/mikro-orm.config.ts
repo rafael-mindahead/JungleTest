@@ -22,7 +22,7 @@ export default defineConfig({
   extensions: [Migrator],
 
   migrations: {
-    path: './dist/database/migrations',
+    path: './dist/src/database/migrations',
     pathTs: './src/database/migrations',
     emit: 'ts',
     transactional: true,

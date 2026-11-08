@@ -1,26 +1,23 @@
-
 # Dependencies
 node_modules/
 
-# Build
+# Build artifacts and reports
 dist/
 coverage/
 *.tsbuildinfo
+artifacts/
+reports/
 
-# Environment
+# Environment / secrets
 .env
 .env.*
 !.env.example
 
-# macOS
+# macOS and editors
 .DS_Store
-
-# Editors
 .vscode/
 .idea/
 
 # Logs
 *.log
 npm-debug.log*
-
-.env
