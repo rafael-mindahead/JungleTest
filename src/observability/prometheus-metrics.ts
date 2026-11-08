@@ -42,23 +42,25 @@ function line(lines: string[], name: string, value: number, labelSet?: Record<st
   lines.push(name + (labelSet ? labels(labelSet) : '') + ' ' + finite(value));
 }
 
+const SAFE_ROUTE_TEMPLATES = new Set([
+  '/health/live', '/health/ready',
+  '/wallets', '/wallets/:walletId', '/wallets/:walletId/ledger',
+  '/wallets/:walletId/reconciliation',
+  '/:walletId', '/:walletId/ledger', '/:walletId/reconciliation',
+  '/wagering/transactions', '/wagering/transactions/:transactionId',
+  '/providers/:providerId/wagering/transactions/:externalTransactionId',
+  '/internal/metrics', '/internal/prometheus', '/metrics', '/prometheus',
+]);
+
+/** Explicit allowlist prevents UUIDs, external IDs and unbounded Prometheus cardinality. */
+export function safeRouteTemplate(value: unknown): string {
+  return typeof value === 'string' && SAFE_ROUTE_TEMPLATES.has(value) ? value : 'unmatched';
+}
+
 /** Labels are bounded: route is an Express template, never a request URL. */
 export function recordHttpRequest(method: string, route: string, statusCode: number, durationMs: number): void {
   const safeMethod = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/.test(method) ? method : 'OTHER';
-  // Only registered ROUTE TEMPLATES: never let a request URL, ID, or token
-  // become a Prometheus label (high-cardinality and privacy risk).
-  const templates = new Set([
-    '/health/live', '/health/ready',
-    '/wallets', '/wallets/:walletId', '/wallets/:walletId/ledger',
-    '/wallets/:walletId/reconciliation',
-    '/:walletId', '/:walletId/ledger', '/:walletId/reconciliation',
-    '/wagering/transactions', '/wagering/transactions/:transactionId',
-    '/providers/:providerId/wagering/transactions/:externalTransactionId',
-    '/internal/metrics', '/internal/prometheus', '/metrics', '/prometheus',
-  ]);
-  const safeRoute = templates.has(route) ? route : 'unmatched';
-  const status = Number.isInteger(statusCode) && statusCode >= 100 && statusCode < 600
-    ? String(statusCode) : 'unknown';
+  const safeRoute = safeRouteTemplate(route);
   const key = JSON.stringify([safeMethod, safeRoute, status]);
   httpCounts.set(key, (httpCounts.get(key) ?? 0) + 1);
   const duration = Math.max(0, finite(durationMs) / 1000);
