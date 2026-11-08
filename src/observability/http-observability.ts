@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { recordHttpRequest } from './prometheus-metrics.js';
+import { recordHttpRequest, safeRouteTemplate } from './prometheus-metrics.js';
 import { startTraceSpan } from './otel-tracing.js';
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
@@ -25,7 +25,7 @@ export function correlationMiddleware(req: Request, res: Response, next: NextFun
     'http.request.method': req.method,
   }, req.header('traceparent'));
   res.once('finish', () => {
-    const route = typeof req.route?.path === 'string' ? req.route.path : 'unmatched';
+    const route = safeRouteTemplate(req.route?.path);
     recordHttpRequest(req.method, route, res.statusCode, performance.now() - started);
     span.end(res.statusCode >= 500 ? 'ERROR' : 'OK',
       { 'http.response.status_code': res.statusCode });
