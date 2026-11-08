@@ -91,7 +91,7 @@ jobs:
           cat /tmp/jungle-benchmark-api.log
           exit 1
       - name: Seed disposable financial benchmark wallets
-        run: BENCH_WALLETS=6 bun scripts/bench/seed-financial.ts
+        run: BENCH_WALLETS=24 bun scripts/bench/seed-financial.ts
       - name: Run real k6 wagering smoke (three VUs; NOT a capacity claim)
         run: |
           docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
@@ -100,6 +100,23 @@ jobs:
             -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
             /work/scripts/bench/financial.js
       - name: Reconcile all seeded wallet balances against ledger
+        run: bun scripts/bench/reconcile-financial.ts
+      - name: Run isolated 25-VU financial pilot and sample CPU/RSS/FD
+        run: |
+          bash scripts/bench/sample-process.sh "$(cat /tmp/jungle-benchmark-api.pid)" 65 artifacts/bench/process-pilot.csv &
+          sampler=$!
+          set +e
+          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
+            run --summary-export=/work/artifacts/bench/k6-pilot.json \
+            -e PROFILE=pilot -e BASE_URL=http://127.0.0.1:3000 \
+            -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
+            /work/scripts/bench/financial.js
+          benchmark_status=$?
+          wait "$sampler"
+          sampler_status=$?
+          if [ "$benchmark_status" -ne 0 ]; then exit "$benchmark_status"; fi
+          exit "$sampler_status"
+      - name: Reconcile wallets after 25-VU pilot
         run: bun scripts/bench/reconcile-financial.ts
       - name: Financial benchmark diagnostics on failure
         if: failure()
@@ -111,6 +128,8 @@ jobs:
           name: financial-smoke-and-reconciliation
           path: |
             artifacts/bench/k6-smoke.json
+            artifacts/bench/k6-pilot.json
+            artifacts/bench/process-pilot.csv
             artifacts/bench/reconciliation.json
           if-no-files-found: ignore
       - name: MiniStack diagnostics on failure
