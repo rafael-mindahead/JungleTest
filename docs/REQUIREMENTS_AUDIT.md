@@ -10,7 +10,7 @@
 | Mensageria e falhas (15) | MiniStack FIFO, Inbox, Outbox pós-commit, DLQ, morte pós-COMMIT/pré-ACK, recuperação com 2 publishers | Falta matriz completa de `SIGTERM` e prova contra AWS SQS gerenciado |
 | Modelagem e arquitetura (10) | Money/Wallet/Ledger e WagerTransaction com máquina de estados, eventos tipados, validação desacoplada, MikroORM e decisões de locks | `WageringService` concentra regras e SQL; menor separação que a concorrente |
 | Testes (10) | CI com Postgres 17 real, SQS MiniStack, typecheck, transações, locks, falhas e JWT; migrations reversíveis testadas a partir do novo CI | Sem garantia contra todos os cenários de produção; sem suíte real do IdP externo |
-| Observabilidade (5) | live/ready, métricas protegidas, erro HTTP padronizado e correlation ID/log JSON por requisição | Logs JSON e IDs de correlação agora presentes; falta Prometheus e tracing distribuído |
+| Observabilidade (5) | live/ready, Prometheus, OTLP/HTTP, correlação HTTP/SQS, métricas e logs JSON | Prometheus e W3C traceparent/OTLP implementados opcionalmente; faltam instrumentação automática e ambiente monitorado de produção |
 | Documentação (5) | README, arquitetura, invariantes, comparativo, limitações, dados da carga e links do CI | Validação de Compose multinó exige IdP externo |
 
 ## Resultado dos últimos testes
@@ -21,7 +21,7 @@ A execução [100 VUs pré-JWT](https://github.com/rafael-mindahead/JungleTest/a
 
 ## Faixa de pontuação — apenas estimativa
 
-Os pesos oficiais somam **100**, mas a nota exata só a Jungle atribui. Na inspeção atual, uma faixa de **84 a 90/100** é plausível se o novo CI permanecer verde: correção/concorrência/idempotência fortes; perdas residuais mais prováveis em fronteiras de persistência do agregado `WagerTransaction`, ausência de Prometheus e aspectos operacionais. Essa estimativa **não** significa aprovação oficial, superioridade definitiva sobre outras submissões ou ausência de critérios eliminatórios inéditos.
+Os pesos oficiais somam **100**, mas a nota exata só a Jungle atribui. Na inspeção atual, uma faixa de **84 a 90/100** é plausível se o novo CI permanecer verde: correção/concorrência/idempotência fortes; perdas residuais mais prováveis em fronteiras de persistência do agregado `WagerTransaction`, ausência do SDK completo OpenTelemetry e aspectos operacionais. Essa estimativa **não** significa aprovação oficial, superioridade definitiva sobre outras submissões ou ausência de critérios eliminatórios inéditos.
 
 A própria Jungle declara **0 pontos para autenticação** e carga **opcional**, sem limite de RPS ou de usuários virtuais. Prioridade é correção, não perseguir 200 mil VUs.
 

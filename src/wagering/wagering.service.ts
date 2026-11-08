@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { FinancialMetrics } from '../observability/financial-metrics.service.js';
+import { activeTraceparent, startTraceSpan } from '../observability/otel-tracing.js';
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
@@ -100,8 +101,11 @@ export class WageringService {
       nonempty(inbox.consumerName, 'consumerName', 100);
     }
     const started = performance.now();
+    const trace = startTraceSpan('wager.submit', 'INTERNAL', {
+      'wager.kind': input.kind, 'messaging.system': inbox ? 'aws_sqs' : 'http',
+    });
     try {
-    const result = await this.orm.em.fork().transactional(async (em0) => {
+    const result = await trace.run(() => this.orm.em.fork().transactional(async (em0) => {
       const em = em0 as unknown as EM;
       if (inbox) {
         const inserted = await em.execute<Array<{ message_id: string }>>(
@@ -155,10 +159,12 @@ export class WageringService {
       const result = await this.settle(em, inserted[0], input, false);
       if (inbox) await this.completeInbox(em, inbox, inserted[0].id);
       return result;
-    }, { clear: true });
+    }, { clear: true }));
+    trace.end('OK', { 'wager.status': result.status, 'wager.replayed': result.idempotentReplay });
     this.metrics.recordResult(result.status, result.idempotentReplay, performance.now() - started);
     return result;
     } catch (error) {
+      trace.end('ERROR', { 'error.type': error instanceof Error ? error.name : 'UnknownError' });
       const code = (error as { code?: string; cause?: { code?: string } }).code ??
         (error as { cause?: { code?: string } }).cause?.code;
       if (code === '40P01' || code === '55P03' || code === '40001') {
@@ -176,10 +182,13 @@ export class WageringService {
   }
   private async emit(em: EM, event: IntegrationEvent<Readonly<Record<string, unknown>>>): Promise<void> {
     const envelope = event.toJSON();
+    // Outbox owns trace context at SQL COMMIT. Publisher propagates it later.
+    const traceparent = activeTraceparent();
+    const eventPayload = traceparent ? { ...envelope, traceparent } : envelope;
     await em.execute([
       'INSERT INTO wager_outbox (id, aggregate_id, event_type, payload)',
       'VALUES (?, ?, ?, ?::jsonb)',
-    ].join(' '), [event.eventId, event.aggregateId, event.eventType, JSON.stringify(envelope)], 'run');
+    ].join(' '), [event.eventId, event.aggregateId, event.eventType, JSON.stringify(eventPayload)], 'run');
   }
   private async settle(em: EM, tx: WagerRow, input: WagerInput, retry: boolean): Promise<WagerResult> {
     const aggregate = WagerTransaction.rehydrate({ id: tx.id, kind: tx.kind, status: tx.status });

@@ -1,0 +1,38 @@
+# Optional observability overlay. See docs/OBSERVABILITY.md.
+x-telemetry: &telemetry
+  OTEL_TRACES_ENABLED: "1"
+  OTEL_TRACES_ENDPOINT: "http://otel-collector:4318/v1/traces"
+  OTEL_SAMPLE_RATE: "0.1"
+
+services:
+  app-1:
+    environment: *telemetry
+  app-2:
+    environment: *telemetry
+  app-3:
+    environment: *telemetry
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/secrets/metrics-token:/etc/prometheus/metrics-token:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    depends_on:
+      - app-1
+      - app-2
+      - app-3
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.131.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]

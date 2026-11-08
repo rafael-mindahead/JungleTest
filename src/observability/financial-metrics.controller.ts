@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import {
-  Controller, Get, Headers, Inject, OnModuleDestroy,
+  Controller, Get, Header, Headers, Inject, OnModuleDestroy,
   ServiceUnavailableException, UnauthorizedException,
 } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
@@ -9,6 +9,7 @@ import {
   GetQueueAttributesCommand, GetQueueUrlCommand, SQSClient,
 } from '@aws-sdk/client-sqs';
 import { FinancialMetrics } from './financial-metrics.service.js';
+import { formatPrometheus } from './prometheus-metrics.js';
 
 interface StatusRow { status: string; total: number }
 interface OutboxRow { pending: number; lag_seconds: number; retries: number }
@@ -108,6 +109,16 @@ export class FinancialMetricsController implements OnModuleDestroy {
       deadLetterQueue: dlq,
       local: this.local.snapshot(),
     };
+  }
+
+  /** Prometheus can authenticate with Authorization: Bearer <METRICS_TOKEN>. */
+  @Get('prometheus')
+  @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+  async prometheus(@Headers('authorization') authorization?: string,
+                   @Headers('x-metrics-token') token?: string): Promise<string> {
+    const supplied = token ?? (authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined);
+    const snapshot = await this.read(supplied);
+    return formatPrometheus(snapshot);
   }
 
   onModuleDestroy(): void {
