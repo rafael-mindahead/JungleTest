@@ -73,6 +73,11 @@ jobs:
         env:
           RUN_SQS_TESTS: "1"
         run: bun test test/integration/financial-sqs.test.ts
+      - name: Simulated post-commit crash, poison-message DLQ and concurrent Outbox publishers
+        env:
+          RUN_SQS_TESTS: "1"
+          SQS_VISIBILITY_TIMEOUT_SECONDS: "1"
+        run: bun test test/integration/financial-failures.test.ts
       - name: MiniStack diagnostics on failure
         if: failure()
         run: docker logs jungle-ci-ministack || true

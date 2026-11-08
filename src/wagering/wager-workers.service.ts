@@ -34,6 +34,13 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? 'test',
     },
   });
+  private readonly visibilityTimeout = (() => {
+    const seconds = Number(process.env.SQS_VISIBILITY_TIMEOUT_SECONDS ?? '30');
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 43200) {
+      throw new Error('SQS_VISIBILITY_TIMEOUT_SECONDS must be 1..43200');
+    }
+    return seconds;
+  })();
   private stopping = false;
   private tasks: Promise<void>[] = [];
 
@@ -61,7 +68,8 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
         const url = await this.queueUrl(queue);
         const batch = await this.client.send(new ReceiveMessageCommand({
           QueueUrl: url, WaitTimeSeconds: 2, MaxNumberOfMessages: 10,
-          VisibilityTimeout: 30,
+          // Tunable to make crash/redelivery tests reproducible; default for production.
+          VisibilityTimeout: this.visibilityTimeout,
         }));
         for (const msg of batch.Messages ?? []) {
           if (this.stopping) break;
