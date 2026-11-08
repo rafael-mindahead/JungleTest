@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { FinancialMetrics } from '../observability/financial-metrics.service.js';
 import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
@@ -134,7 +136,10 @@ type EM = EntityManager<PostgreSqlDriver>;
 
 @Injectable()
 export class WageringService {
-  constructor(@Inject(MikroORM) private readonly orm: MikroORM<PostgreSqlDriver>) {}
+  constructor(
+    @Inject(MikroORM) private readonly orm: MikroORM<PostgreSqlDriver>,
+    private readonly metrics: FinancialMetrics,
+  ) {}
 
   async submit(raw: unknown, idempotencyKey: string, inbox?: InboxMeta): Promise<WagerResult> {
     const input = parseInput(raw);
@@ -144,7 +149,9 @@ export class WageringService {
       nonempty(inbox.messageId, 'messageId', 250);
       nonempty(inbox.consumerName, 'consumerName', 100);
     }
-    return this.orm.em.fork().transactional(async (em0) => {
+    const started = performance.now();
+    try {
+    const result = await this.orm.em.fork().transactional(async (em0) => {
       const em = em0 as unknown as EM;
       if (inbox) {
         const inserted = await em.execute<Array<{ message_id: string }>>(
@@ -199,6 +206,16 @@ export class WageringService {
       if (inbox) await this.completeInbox(em, inbox, inserted[0].id);
       return result;
     }, { clear: true });
+    this.metrics.recordResult(result.status, result.idempotentReplay, performance.now() - started);
+    return result;
+    } catch (error) {
+      const code = (error as { code?: string; cause?: { code?: string } }).code ??
+        (error as { cause?: { code?: string } }).cause?.code;
+      if (code === '40P01' || code === '55P03' || code === '40001') {
+        this.metrics.recordLockConflict();
+      }
+      throw error;
+    }
   }
 
   private async completeInbox(em: EM, inbox: InboxMeta, transactionId: string): Promise<void> {

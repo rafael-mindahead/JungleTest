@@ -9,10 +9,13 @@ import { WalletsController } from './wagering/wallets.controller.js';
 import { WageringController } from './wagering/wagering.controller.js';
 import { WageringService } from './wagering/wagering.service.js';
 import { WagerWorkers } from './wagering/wager-workers.service.js';
+import { FinancialMetrics } from './observability/financial-metrics.service.js';
+import { FinancialMetricsController } from './observability/financial-metrics.controller.js';
 
 @Module({
   imports: [MikroOrmModule.forRoot(ormConfig), HealthModule],
   providers: [
+    FinancialMetrics,
     WageringService,
     WagerWorkers,
     {
@@ -21,6 +24,6 @@ import { WagerWorkers } from './wagering/wager-workers.service.js';
       inject: [MikroORM],
     },
   ],
-  controllers: [WalletsController, WageringController],
+  controllers: [WalletsController, WageringController, FinancialMetricsController],
 })
 export class AppModule {}
