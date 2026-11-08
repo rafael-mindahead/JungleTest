@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { recordHttpRequest } from './prometheus-metrics.js';
+import { startTraceSpan } from './otel-tracing.js';
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 
@@ -19,10 +21,17 @@ export function correlationMiddleware(req: Request, res: Response, next: NextFun
   const correlationId = normalizedCorrelationId(req.header('x-correlation-id'));
   res.setHeader('X-Correlation-Id', correlationId);
   const started = performance.now();
+  const span = startTraceSpan('HTTP ' + req.method, 'SERVER', {
+    'http.request.method': req.method,
+  }, req.header('traceparent'));
   res.once('finish', () => {
+    const route = typeof req.route?.path === 'string' ? req.route.path : 'unmatched';
+    recordHttpRequest(req.method, route, res.statusCode, performance.now() - started);
+    span.end(res.statusCode >= 500 ? 'ERROR' : 'OK',
+      { 'http.response.status_code': res.statusCode });
+
     if (process.env.HTTP_ACCESS_LOGS === '0') return;
     // Route template only: no player IDs, tokens, query strings or monetary payloads.
-    const route = typeof req.route?.path === 'string' ? req.route.path : 'unmatched';
     const record = {
       timestamp: new Date().toISOString(),
       level: 'info',
@@ -35,7 +44,7 @@ export function correlationMiddleware(req: Request, res: Response, next: NextFun
     };
     console.info(JSON.stringify(record));
   });
-  traceStorage.run({ correlationId }, next);
+  traceStorage.run({ correlationId }, () => span.run(next));
 }
 
 export function httpErrorCode(status: number): string {
