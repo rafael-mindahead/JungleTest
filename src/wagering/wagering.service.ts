@@ -6,6 +6,7 @@ import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Money } from '../domain/shared/value-objects/money.js';
+import { WagerTransaction, type WagerKind, type WagerStatus } from '../domain/wagering/wager-transaction.js';
 import { Wallet } from '../domain/wallets/wallet.js';
 import { InsufficientFundsError } from '../domain/wallets/wallet.errors.js';
 import { LedgerDirection, type WalletLedgerEntry } from '../domain/wallets/wallet-ledger-entry.js';
@@ -14,8 +15,6 @@ import {
   WagerTransactionProcessed, WagerTransactionRejected, type IntegrationEvent,
 } from './integration-events.js';
 
-type WagerKind = 'BET' | 'WIN' | 'LOSS' | 'REFUND' | 'ROLLBACK';
-type WagerStatus = 'PENDING' | 'PENDING_REFERENCE' | 'PROCESSED' | 'REJECTED' | 'FAILED';
 const UUID_RE = /^[a-f\d]{8}(-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 
 interface WagerInput {
@@ -232,6 +231,7 @@ export class WageringService {
     ].join(' '), [event.eventId, event.aggregateId, event.eventType, JSON.stringify(envelope)], 'run');
   }
   private async settle(em: EM, tx: WagerRow, input: WagerInput, retry: boolean): Promise<WagerResult> {
+    const aggregate = WagerTransaction.rehydrate({ id: tx.id, kind: tx.kind, status: tx.status });
     const wallets = await em.execute<WalletRow[]>(
       // The wager row FK already holds KEY SHARE on this wallet. FOR UPDATE
       // conflicts with another transaction's FK KEY SHARE and can deadlock when
@@ -254,6 +254,7 @@ export class WageringService {
       reference = found[0];
       if (!reference || reference.status === 'PENDING' || reference.status === 'PENDING_REFERENCE') {
         if (tx.attempts >= 7) return this.reject(em, tx, 'REFERENCE_NOT_FOUND', initialBalance);
+        aggregate.transition('PENDING_REFERENCE');
         const attempts = Number(tx.attempts) + 1;
         const seconds = Math.min(300, 2 ** attempts);
         await em.execute([
@@ -281,10 +282,10 @@ export class WageringService {
         if (String(reference.amount) !== input.money.toJSON().amount) {
           return this.reject(em, tx, 'REVERSAL_AMOUNT_MISMATCH', initialBalance);
         }
-        if (input.kind === 'REFUND' && reference.kind !== 'BET') {
+        if (input.kind === 'REFUND' && !aggregate.canReference(reference.kind)) {
           return this.reject(em, tx, 'REFUND_REQUIRES_BET', initialBalance);
         }
-        if (input.kind === 'ROLLBACK' && !['BET','WIN','REFUND'].includes(reference.kind)) {
+        if (input.kind === 'ROLLBACK' && !aggregate.canReference(reference.kind)) {
           return this.reject(em, tx, 'INVALID_ROLLBACK_REFERENCE', initialBalance);
         }
         const reversed = await em.execute<Array<{ id: string }>>([
@@ -301,7 +302,7 @@ export class WageringService {
       if (!reference) return this.reject(em, tx, 'REFERENCE_NOT_FOUND', initialBalance);
       direction = reference.kind === 'BET' ? LedgerDirection.Credit : LedgerDirection.Debit;
     }
-    if (input.kind === 'WIN' && reference?.kind !== undefined && reference.kind !== 'BET') {
+    if (input.kind === 'WIN' && reference?.kind !== undefined && !aggregate.canReference(reference.kind)) {
       return this.reject(em, tx, 'WIN_REQUIRES_BET', initialBalance);
     }
     let ledger: WalletLedgerEntry | undefined;
@@ -336,6 +337,7 @@ export class WageringService {
         ledger.balanceBefore.toJSON().amount, ledger.balanceAfter.toJSON().amount,
         ledger.createdAt], 'run');
     }
+    aggregate.transition('PROCESSED');
     await em.execute([
       "UPDATE wager_transactions SET status = 'PROCESSED', processed_at = NOW(),",
       'reference_transaction_id = ?, result_balance = ?, next_attempt_at = NULL WHERE id = ?',
@@ -358,6 +360,7 @@ export class WageringService {
   }
   private async reject(em: EM, tx: WagerRow, code: string,
                        amount: string | null): Promise<WagerResult> {
+    WagerTransaction.rehydrate({ id: tx.id, kind: tx.kind, status: tx.status }).transition('REJECTED');
     await em.execute([
       "UPDATE wager_transactions SET status = 'REJECTED', failure_code = ?,",
       'result_balance = ?, processed_at = NOW(), next_attempt_at = NULL WHERE id = ?',
