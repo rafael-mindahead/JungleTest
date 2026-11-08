@@ -16,7 +16,6 @@ import {
   WagerTransactionProcessed, WagerTransactionRejected, type IntegrationEvent,
 } from './integration-events.js';
 
-const UUID_RE = /^[a-f\d]{8}(-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 
 interface WagerRow {
   id: string; provider_id: string; external_transaction_id: string;
