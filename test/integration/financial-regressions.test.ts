@@ -93,7 +93,7 @@ integrationDescribe('Financial HTTP regression and adversarial cases', () => {
       .send(base).expect(400);
     expect(await count('wager_transactions', scope.walletId)).toBe(0);
     expect(await count('wallet_ledger_entries', scope.walletId)).toBe(1);
-    expect(await count('wager_outbox', scope.walletId)).toBe(1);
+    expect(await count('wager_outbox', scope.walletId)).toBe(0);
     await reconciles(scope, '100.00');
   });
 
