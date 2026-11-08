@@ -239,4 +239,20 @@ integrationDescribe('Financial HTTP API against real PostgreSQL', () => {
     expect(await count('wallet_ledger_entries', scope.walletId)).toBe(13);
   });
 
+  test('HTTP errors include stable codes and traceable correlation IDs', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/wallets/not-a-uuid')
+      .set('X-Correlation-Id', 'client-request-42')
+      .expect(400);
+    expect(response.headers['x-correlation-id']).toBe('client-request-42');
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(response.body.error.correlationId).toBe('client-request-42');
+    const unsafe = await request(app.getHttpServer())
+      .get('/wallets/not-a-uuid')
+      .set('X-Correlation-Id', 'bad value with spaces')
+      .expect(400);
+    expect(unsafe.body.error.correlationId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(unsafe.headers['x-correlation-id']).toBe(unsafe.body.error.correlationId);
+  });
+
 });
