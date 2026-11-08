@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import {
   BadRequestException, Body, ConflictException, Controller, Get, Inject,
-  NotFoundException, Param, Post, Query,
+  NotFoundException, Param, Post, Query, UseGuards,
 } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Money } from '../domain/shared/value-objects/money.js';
 import { PostgresWalletRepository } from '../infrastructure/wallets/postgres-wallet.repository.js';
+import { Access, IdentityGuard } from '../security/identity.guard.js';
 
 interface LedgerRow {
   id: string; transaction_id: string; direction: string; currency: string;
@@ -19,6 +20,8 @@ function requireId(id: string): string {
 }
 
 @Controller('wallets')
+@UseGuards(IdentityGuard)
+@Access('admin')
 export class WalletsController {
   constructor(
     private readonly wallets: PostgresWalletRepository,
