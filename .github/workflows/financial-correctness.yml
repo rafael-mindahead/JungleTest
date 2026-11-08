@@ -1,0 +1,50 @@
+name: Financial correctness CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  domain-and-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle_dev
+          POSTGRES_DB: jungle_wagering_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U jungle -d jungle_wagering_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5434
+      DB_NAME: jungle_wagering_test
+      DB_USER: jungle
+      DB_PASSWORD: jungle_dev
+      RUN_DB_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: TypeScript static validation
+        run: bun run typecheck
+      - name: Money and Wallet unit tests
+        run: bun run test:domain
+      - name: Apply real PostgreSQL migrations
+        run: bun run db:migrate
+      - name: Real PostgreSQL concurrency and idempotency tests
+        run: bun run test:integration
