@@ -7,6 +7,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import type { EntityManager, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { WageringService } from './wagering.service.js';
+import { startTraceSpan } from '../observability/otel-tracing.js';
 
 interface OutboxRow {
   id: string; aggregate_id: string; event_type: string; payload: Record<string, unknown>;
@@ -67,12 +68,15 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
       try {
         const url = await this.queueUrl(queue);
         const batch = await this.client.send(new ReceiveMessageCommand({
-          QueueUrl: url, WaitTimeSeconds: 2, MaxNumberOfMessages: 10,
+          QueueUrl: url, WaitTimeSeconds: 2, MaxNumberOfMessages: 10, MessageAttributeNames: ['All'],
           // Tunable to make crash/redelivery tests reproducible; default for production.
           VisibilityTimeout: this.visibilityTimeout,
         }));
         for (const msg of batch.Messages ?? []) {
           if (this.stopping) break;
+          const span = startTraceSpan('sqs.wager.consume', 'CONSUMER', {
+            'messaging.system': 'aws_sqs', 'messaging.operation.type': 'process',
+          }, msg.MessageAttributes?.traceparent?.StringValue);
           try {
             const envelope = JSON.parse(msg.Body ?? '') as QueueEnvelope;
             if (envelope.type !== 'WagerTransactionRequested' ||
@@ -80,15 +84,19 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
                 typeof envelope.data.idempotencyKey !== 'string') {
               throw new Error('Invalid SQS envelope');
             }
-            await this.wagers.submit(envelope.data, envelope.data.idempotencyKey, {
-              messageId: envelope.messageId, consumerName: 'wager-processor',
+            await span.run(async () => {
+              await this.wagers.submit(envelope.data, envelope.data.idempotencyKey, {
+                messageId: envelope.messageId, consumerName: 'wager-processor',
+              });
+              if (msg.ReceiptHandle) {
+                await this.client.send(new DeleteMessageCommand({
+                  QueueUrl: url, ReceiptHandle: msg.ReceiptHandle,
+                }));
+              }
             });
-            if (msg.ReceiptHandle) {
-              await this.client.send(new DeleteMessageCommand({
-                QueueUrl: url, ReceiptHandle: msg.ReceiptHandle,
-              }));
-            }
+            span.end('OK');
           } catch (error) {
+            span.end('ERROR');
             // Malformed / conflicting messages remain visible and are moved
             // by SQS redrive to the configured DLQ after maxReceiveCount.
             this.logger.error(JSON.stringify({
@@ -133,18 +141,31 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
         const url = await this.queueUrl(queue);
         const rows = await this.claimOutbox(10);
         for (const row of rows) {
+          const span = startTraceSpan('sqs.outbox.publish', 'PRODUCER', {
+            'messaging.system': 'aws_sqs', 'messaging.operation.type': 'publish',
+            'event.type': row.event_type,
+          }, row.payload.traceparent);
           try {
-            await this.client.send(new SendMessageCommand({
-              QueueUrl: url,
-              MessageBody: JSON.stringify(row.payload),
-              MessageGroupId: row.aggregate_id,
-              MessageDeduplicationId: row.id,
-            }));
+            await span.run(async () => {
+              await this.client.send(new SendMessageCommand({
+                QueueUrl: url,
+                MessageBody: JSON.stringify(row.payload),
+                MessageGroupId: row.aggregate_id,
+                MessageDeduplicationId: row.id,
+                ...(span.traceparent ? {
+                  MessageAttributes: { traceparent: {
+                    DataType: 'String', StringValue: span.traceparent,
+                  } },
+                } : {}),
+              }));
+            });
             await this.orm.em.fork().execute([
               'UPDATE wager_outbox SET published_at = NOW(), locked_by = NULL, locked_until = NULL',
               'WHERE id = ? AND locked_by = ?',
             ].join(' '), [row.id, this.id], 'run');
+            span.end('OK');
           } catch (error) {
+            span.end('ERROR');
             await this.orm.em.fork().execute([
               'UPDATE wager_outbox SET attempts = attempts + 1,',
               "next_attempt_at = NOW() + (LEAST(300, POWER(2, LEAST(attempts + 1, 8))) * INTERVAL '1 second'),",

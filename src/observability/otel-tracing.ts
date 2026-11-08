@@ -38,8 +38,14 @@ function shouldSample(): boolean {
 }
 function encodeAttributes(source: Attributes): Array<{ key: string; value: Record<string, string | number | boolean> }> {
   const result: Array<{ key: string; value: Record<string, string | number | boolean> }> = [];
+  // Strict allowlist: no player/provider/wallet IDs, monetary values, URLs or tokens.
+  const safeKeys = new Set([
+    'http.request.method', 'http.response.status_code',
+    'messaging.system', 'messaging.operation.type',
+    'wager.kind', 'wager.status', 'wager.replayed', 'event.type', 'error.type',
+  ]);
   for (const [key, value] of Object.entries(source)) {
-    if (!/^[a-z][a-z0-9_.]{0,79}$/.test(key)) continue;
+    if (!safeKeys.has(key)) continue;
     if (typeof value === 'string') {
       result.push({ key, value: { stringValue: value.slice(0, 100) } });
     } else if (typeof value === 'boolean') {

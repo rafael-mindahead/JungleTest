@@ -11,6 +11,7 @@ import { WageringController } from './wagering/wagering.controller.js';
 import { WageringService } from './wagering/wagering.service.js';
 import { WagerWorkers } from './wagering/wager-workers.service.js';
 import { FinancialMetrics } from './observability/financial-metrics.service.js';
+import { TelemetryShutdown } from './observability/otel-tracing.js';
 import { FinancialMetricsController } from './observability/financial-metrics.controller.js';
 import { IdentityGuard, OidcTokenVerifier } from './security/identity.guard.js';
 import { FinancialHttpErrorFilter, correlationMiddleware } from './observability/http-observability.js';
@@ -19,6 +20,7 @@ import { FinancialHttpErrorFilter, correlationMiddleware } from './observability
   imports: [MikroOrmModule.forRoot(ormConfig), HealthModule],
   providers: [
     FinancialMetrics,
+    TelemetryShutdown,
     { provide: APP_FILTER, useClass: FinancialHttpErrorFilter },
     OidcTokenVerifier,
     IdentityGuard,
