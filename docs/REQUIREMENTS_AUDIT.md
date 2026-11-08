@@ -30,3 +30,7 @@
 - Metrics include outbox lag, status/retry/duplicate/lock counts and processing latency.
 - All migrations and reverse migrations tested on disposable database.
 - README, ARCHITECTURE, CI results, assumptions and any optional benchmark evidence updated.
+
+### CI regression discovered and fixed
+
+Initial three-process execution [run 42499052753](https://github.com/rafael-mindahead/JungleTest/actions/runs/42499052753) exposed a PostgreSQL deadlock when two *distinct* bets raced on one wallet. Correctness evidence from the 50 duplicate test does not excuse this failure. The financial lock was adjusted from `FOR UPDATE` to `FOR NO KEY UPDATE`; consult the newest successful workflow run before claiming this issue resolved.

@@ -42,7 +42,7 @@ WageringController                  WagerWorkers.consume
 
 ## Invariants and consistency
 
-- **Concurrency unit:** wallet ID. `SELECT ... FOR UPDATE` serializes competing operations on the same wallet. Independently locked wallets can progress in parallel; there is no shared global lock.
+- **Concurrency unit:** wallet ID. The wagering transaction path uses `SELECT ... FOR NO KEY UPDATE` to serialize balance writes while remaining compatible with the FK `KEY SHARE` taken when inserting a new wager. The wallet repository also locks a row before standalone ledger writes. Independently locked wallets can progress in parallel; there is no shared global lock.
 - **Ledger:** append-only trigger, uniqueness per wallet/transaction, arithmetic CHECK, positive amounts, nonnegative balance snapshots.
 - **Wallet:** unique (player,currency), nonnegative balance constraint, version increment only for balance-changing movements.
 - **Wagers:** external identity is `(provider_id, external_transaction_id)`; the current idempotency key is globally unique (stronger uniqueness, but less flexible than provider-scoped keys), and payload hash canonicalization sorts business-field keys.
@@ -81,3 +81,7 @@ GitHub Actions runs real Postgres migrations, domain tests, HTTP integration tes
 Proof still missing: worker crash precisely after commit/before ACK, crash after publish/before flag, DLQ redrive, 2+ simultaneous Outbox publishers and restart reconciliation. These gaps matter under sections 10-14 of the official rubric.
 
 The health-endpoint-only k6 script is **not** a financial throughput benchmark. The official rubric assigns no fixed RPS target; 100k/200k VUs are an internal stretch goal, not a Jungle Gaming requirement. Do not claim those tests have run.
+
+## PostgreSQL deadlock correction (found by three-process CI)
+
+The first three-process test discovered a real lock inversion: concurrent `wager_transactions` INSERTs take a foreign-key `KEY SHARE` lock on the wallet row, after which each transaction requested `FOR UPDATE` on that same row. Those two requests can deadlock, causing HTTP 500 (rather than a financial rejection). The wagering path now uses `FOR NO KEY UPDATE`, which serializes updates to balance and version without conflicting with the existing FK `KEY SHARE`. The 50-identical-BET and two-distinct-BET three-process tests guard against regression.

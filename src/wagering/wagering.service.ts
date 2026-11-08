@@ -216,7 +216,11 @@ export class WageringService {
   }
   private async settle(em: EM, tx: WagerRow, input: WagerInput, retry: boolean): Promise<WagerResult> {
     const wallets = await em.execute<WalletRow[]>(
-      'SELECT * FROM wallets WHERE id = ? FOR UPDATE', [tx.wallet_id], 'all',
+      // The wager row FK already holds KEY SHARE on this wallet. FOR UPDATE
+      // conflicts with another transaction's FK KEY SHARE and can deadlock when
+      // two wager inserts are racing. NO KEY UPDATE serializes balance writes
+      // without conflicting with those FK checks (wallet PK stays unchanged).
+      'SELECT * FROM wallets WHERE id = ? FOR NO KEY UPDATE', [tx.wallet_id], 'all',
     );
     if (!wallets.length) return this.reject(em, tx, 'WALLET_NOT_FOUND', null);
     const wallet = walletFromRow(wallets[0]);
