@@ -37,7 +37,7 @@ WageringController                  WagerWorkers.consume
 - **Bun 1.x, TypeScript strict, NestJS, PostgreSQL 17, MikroORM 7 and MiniStack FIFO SQS**. Docker Compose orchestrates local persistence and broker emulation.
 - `Money` owns exact decimal amounts, currency and JSON serialization independently of Nest and the ORM. SQL uses `NUMERIC(20,2)`. Never use JS floating-point values for balances.
 - `Wallet` is an aggregate root with private state and factories for opening and rehydration. The ledger domain entry is immutable.
-- `WageringService` currently combines orchestration with direct SQL. This **architectural compromise** protects atomicity of wallet, ledger, transaction outcome, Inbox and Outbox, but leaves a domain-modeling deficit against the challenge's explicit `WagerTransaction` aggregate. The competitor separates this more cleanly with an explicit state machine, repositories and Unit of Work; that remains a justified follow-up, not an unverified claim of equivalence.
+- `WagerTransaction` now contains a **small, executable aggregate state machine** and reference-kind rules, directly exercised by the transactional settlement service and domain tests. The shared HTTP/SQS validation contract moved to `wager-input.ts`. `WageringService` still mixes orchestration with direct SQL instead of independent repository ports and Unit of Work: it preserves atomicity but remains less layered than the competitor.
 - MikroORM manages connection pooling and transactions. Some financial persistence uses direct parameterized SQL inside a MikroORM transactional EntityManager because precise row locks and DML conditions are essential.
 
 ## Invariants and consistency
@@ -76,7 +76,7 @@ SQS is treated as an internal trusted transport per the challenge; it retains th
 
 ## Observability
 
-`GET /health/live` and `GET /health/ready` separate liveness and dependency readiness. The `GET /internal/metrics` endpoint is protected by `METRICS_TOKEN` (min 12 characters), uses constant-time comparison and reports durable transaction status counts, Inbox volume, retry counts, pending Outbox/age, approximate DLQ state and process-local financial metrics. It intentionally omits player identities and monetary payloads. This is a protected JSON diagnostics endpoint, **not** Prometheus/OpenTelemetry. Correlation-rich structured request logging and distributed tracing are still gaps relative to the official observability requirements.
+`GET /health/live` and `GET /health/ready` separate liveness and dependency readiness. The `GET /internal/metrics` endpoint is protected by `METRICS_TOKEN` (min 12 characters), uses constant-time comparison and reports durable transaction status counts, Inbox volume, retry counts, pending Outbox/age, approximate DLQ state and process-local financial metrics. It intentionally omits player identities and monetary payloads. This is a protected JSON diagnostics endpoint, **not** Prometheus/OpenTelemetry. Express middleware now generates or safely accepts `X-Correlation-Id` and emits JSON access logs with route templates, status and latency. A global exception filter produces stable error codes and correlation IDs while hiding unhandled exception details. Correlation is request-level only: distributed trace propagation across SQS and Prometheus/OpenTelemetry remain gaps.
 
 ## Reconciliation and snapshots
 
@@ -90,4 +90,4 @@ The optional **historical pre-authentication** 100-VU experiment ran on a GitHub
 
 The new [Dockerfile](Dockerfile) and [three-instance Compose overlay](docker-compose.cluster.yml) permit a reproducible deployment demonstration after supplying an external IdP. The CI validates the configuration and builds the image, but this is **not** proof that a three-node Compose deployment with a real IdP has been exercised. The existing three-process integration test independently confirms financial concurrency.
 
-Remaining non-eliminatory gaps: a dedicated `WagerTransaction` aggregate with explicit legal transitions and persistence ports, deeper request-level correlation logs/Prometheus metrics, full SIGTERM interruption/restart matrix and a deployment exercise against an external IdP. No claim of 100k/200k virtual users, production hardening or exactly-once transport delivery is made.
+Remaining non-eliminatory gaps: dedicated persistence ports for the `WagerTransaction` aggregate (the state machine exists but SQL remains in the service), Prometheus/OpenTelemetry and cross-process trace propagation, full SIGTERM interruption/restart matrix and a deployment exercise against an external IdP. No claim of 100k/200k virtual users, production hardening or exactly-once transport delivery is made.

@@ -11,11 +11,11 @@ Implementação do [desafio financeiro oficial da Jungle Gaming](https://github.
 - Idempotência persistente no PostgreSQL, hash canônico, Inbox, Outbox transacional, ACK pós-commit, DLQ e recuperação.
 - API HTTP protegida por JWT RS256 de **IdP externo**: administrador gerencia carteiras; provedores só submetem/consultam suas operações.
 - Testes reais de concorrência entre **três processos**, crash após commit, dois publishers, MiniStack SQS e regressões HTTP.
-- Métricas operacionais JSON protegidas e testes k6 opcionais. Não existe exigência oficial de 100 mil/200 mil usuários.
+- Métricas operacionais JSON protegidas, erros HTTP padronizados, correlation ID por requisição e logs JSON sem dados financeiros. Testes k6 permanecem opcionais; não há exigência de 100 mil/200 mil usuários.
 
 ## Evidências verificadas
 
-[Último CI de correção](https://github.com/rafael-mindahead/JungleTest/actions) executa typecheck, migrations PostgreSQL e reversão, integração HTTP/DB, autorização RS256, três processos e fila MiniStack. A suite anterior à atualização de reconciliação tinha **39 testes unitários, 19 de integração DB/HTTP, 3 de auth, 3 multi-processo, 1 SQS E2E e 3 de recuperação/DLQ**, todos aprovados. A nova regressão de reconciliação aumenta a suite DB/HTTP para 20 quando o CI mais recente concluir.
+[Último CI de correção](https://github.com/rafael-mindahead/JungleTest/actions) executa typecheck, migrations PostgreSQL e reversão, integração HTTP/DB, autorização RS256, três processos e fila MiniStack. Os testes cobrem estado da transação, validação compartilhada HTTP/SQS, contratos de erro, concorrência financeira, autenticação, MiniStack SQS e reversão de migrations. Consulte a última execução verde para conferir a contagem exata.
 
 No [benchmark pré-autenticação com 100 VUs](https://github.com/rafael-mindahead/JungleTest/actions/runs/42503672224), foram registradas **279.431 requisições em 7 minutos (rampas incluídas)**, média **665,01 RPS**, **p95 54,45 ms**, **p99 69,78 ms** e **0% de erros técnicos**, com reconciliação final aprovada. **Não é evidência de escala em produção nem de throughput após JWT**. A exportação do resumo JSON falhou por permissão do container; os números citados estão nos logs, e o workflow agora exige o arquivo em futuras execuções. Não serão feitos novos testes de carga automaticamente.
 
@@ -71,6 +71,14 @@ docker compose -f docker-compose.yml -f docker-compose.cluster.yml up -d --build
 ```
 
 A API estará nas portas locais 3001, 3002 e 3003. Os valores `jungle_dev` e `test` do Compose são **somente para laboratório**; não use esses segredos em produção. O Compose não sobe Keycloak automaticamente e não substitui testes de integração com um IdP real.
+
+## Último refinamento técnico
+
+Três melhorias inspiradas pela inspeção crítica da solução concorrente, implementadas sem copiar sua arquitetura:
+
+- **Agregado de transação** em `src/domain/wagering/wager-transaction.ts`: as transições de `PENDING`, `PENDING_REFERENCE` e estados terminais são validadas no domínio e aplicadas pelo serviço dentro da mesma transação SQL; checagem de tipos de referência foi centralizada. A persistência ainda é feita pelo `WageringService` (não existe Unit of Work/repositório próprio de WagerTransaction).
+- **Contrato compartilhado** em `src/wagering/wager-input.ts`: validações de moeda, tipo, UUID, referência obrigatória e autorreferência são as mesmas para HTTP e SQS, sem alterar a idempotência. A concorrente utiliza Zod; optamos por funções tipadas sem dependência adicional.
+- **Observabilidade HTTP** em `src/observability/http-observability.ts`: `X-Correlation-Id`, logs estruturados JSON contendo apenas template da rota, status e latência; erros `{error:{code,message,correlationId}}`, sem divulgar detalhes de falhas internas. Desative logs de acesso com `HTTP_ACCESS_LOGS=0` quando necessário. Ainda não adotamos Prometheus/OpenTelemetry.
 
 ## Encerramento do desafio
 
