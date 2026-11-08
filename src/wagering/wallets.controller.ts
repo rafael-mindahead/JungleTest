@@ -3,7 +3,7 @@ import {
   BadRequestException, Body, ConflictException, Controller, Get, Inject,
   NotFoundException, Param, Post, Query, UseGuards,
 } from '@nestjs/common';
-import { MikroORM } from '@mikro-orm/core';
+import { IsolationLevel, MikroORM } from '@mikro-orm/core';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Money } from '../domain/shared/value-objects/money.js';
 import { PostgresWalletRepository } from '../infrastructure/wallets/postgres-wallet.repository.js';
@@ -108,18 +108,30 @@ export class WalletsController {
 
   @Post(':walletId/reconciliation')
   async reconcile(@Param('walletId') walletId: string) {
-    const wallet = await this.wallets.findById(requireId(walletId));
-    if (!wallet) throw new NotFoundException('Wallet not found');
-    const rows = await this.orm.em.fork().execute<Array<{ total: string; entries: number }>>([
-      "SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)::text AS total,",
-      'COUNT(*)::integer AS entries FROM wallet_ledger_entries WHERE wallet_id = ?',
-    ].join(' '), [walletId], 'all');
-    const calculated = Money.from({ amount: rows[0].total, currency: wallet.currency });
-    const difference = wallet.balance.subtract(calculated);
-    return {
-      walletId: wallet.id, storedBalance: wallet.balance.toJSON(),
-      calculatedBalance: calculated.toJSON(), difference: difference.toJSON(),
-      consistent: difference.isZero(), checkedEntries: Number(rows[0].entries),
-    };
+    requireId(walletId);
+    // A single REPEATABLE READ snapshot makes the materialized wallet balance
+    // and the append-only ledger comparable even while another process commits.
+    return this.orm.em.fork().transactional(async (em) => {
+      const wallets = await em.execute<Array<{ id: string; currency: string; balance: string }>>(
+        'SELECT id, currency, balance FROM wallets WHERE id = ?',
+        [walletId], 'all',
+      );
+      const wallet = wallets[0];
+      if (!wallet) throw new NotFoundException('Wallet not found');
+
+      const rows = await em.execute<Array<{ total: string; entries: number }>>([
+        "SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)::text AS total,",
+        'COUNT(*)::integer AS entries FROM wallet_ledger_entries WHERE wallet_id = ?',
+      ].join(' '), [walletId], 'all');
+
+      const stored = Money.from({ amount: String(wallet.balance), currency: wallet.currency });
+      const calculated = Money.from({ amount: String(rows[0].total), currency: wallet.currency });
+      const difference = stored.subtract(calculated);
+      return {
+        walletId: wallet.id, storedBalance: stored.toJSON(),
+        calculatedBalance: calculated.toJSON(), difference: difference.toJSON(),
+        consistent: difference.isZero(), checkedEntries: Number(rows[0].entries),
+      };
+    }, { isolationLevel: IsolationLevel.REPEATABLE_READ, clear: true });
   }
 }
