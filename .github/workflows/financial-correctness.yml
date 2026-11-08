@@ -48,6 +48,14 @@ jobs:
           bun-version: 1.4.4
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Validate three-instance Compose configuration
+        env:
+          OIDC_ISSUER: https://issuer.example.test/realms/jungle
+          OIDC_AUDIENCE: jungle-financial-api
+          OIDC_JWKS_URI: https://issuer.example.test/realms/jungle/certs
+        run: docker compose -f docker-compose.yml -f docker-compose.cluster.yml config --quiet
+      - name: Build reproducible Bun application image
+        run: docker build -t jungle-wagering:ci .
       - name: TypeScript static validation
         run: bun run typecheck
       - name: Money and Wallet unit tests

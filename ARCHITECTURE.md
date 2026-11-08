@@ -37,7 +37,7 @@ WageringController                  WagerWorkers.consume
 - **Bun 1.x, TypeScript strict, NestJS, PostgreSQL 17, MikroORM 7 and MiniStack FIFO SQS**. Docker Compose orchestrates local persistence and broker emulation.
 - `Money` owns exact decimal amounts, currency and JSON serialization independently of Nest and the ORM. SQL uses `NUMERIC(20,2)`. Never use JS floating-point values for balances.
 - `Wallet` is an aggregate root with private state and factories for opening and rehydration. The ledger domain entry is immutable.
-- `WageringService` currently combines orchestration with direct SQL. This **architectural compromise** protects the atomicity of wallet, ledger, transaction outcome, Inbox and Outbox, but should be refactored into domain model and persistence ports to improve maintainability.
+- `WageringService` currently combines orchestration with direct SQL. This **architectural compromise** protects atomicity of wallet, ledger, transaction outcome, Inbox and Outbox, but leaves a domain-modeling deficit against the challenge's explicit `WagerTransaction` aggregate. The competitor separates this more cleanly with an explicit state machine, repositories and Unit of Work; that remains a justified follow-up, not an unverified claim of equivalence.
 - MikroORM manages connection pooling and transactions. Some financial persistence uses direct parameterized SQL inside a MikroORM transactional EntityManager because precise row locks and DML conditions are essential.
 
 ## Invariants and consistency
@@ -59,29 +59,35 @@ WageringController                  WagerWorkers.consume
 | Duplicate request | Unique keys + payload hash prevent duplicate financial effect |
 | Process dies before SQL commit | DB transaction rolls back; SQS can redeliver |
 | Process dies after commit but before SQS ACK | Inbox will recognize replay; **fault injection test remains required** |
-| Process dies after Outbox commit but before publish | Another publisher can lease pending rows; **restart test remains required** |
+| Process dies after Outbox commit but before publish | Another publisher can claim pending rows; recovery with concurrent publishers passed in MiniStack CI |
 | Process dies after publish but before Outbox marking | At-least-once delivery can duplicate events; downstream consumers must deduplicate |
-| Multiple publishers | SQL `SKIP LOCKED` claims + per-row lease; **concurrent publisher test remains required** |
-| Poison message | SQS queue has redrive policy to DLQ; **DLQ test remains required** |
+| Multiple publishers | SQL `SKIP LOCKED` claims + per-row lease; concurrent publisher test passed against MiniStack |
+| Poison message | FIFO redrive to DLQ passed after configured retries in MiniStack CI |
 | Three API/worker processes | Shared DB lock allows correctness; CI test runs three separate Bun/NestJS processes on one PostgreSQL service |
 | Retry after reference not found | Stored backoff and attempt cap; terminal rejection is audited |
 
 ## Authentication and operational security
 
-The official task **assigns zero points to authentication**. The current prototype intentionally has no identity provider; `/health/live` and `/health/ready` are public. **Do not expose the API to untrusted traffic**: `POST /wallets` allows creation with arbitrary positive funding, and provider/wallet ownership is unverified at the network boundary. For production, place an OIDC IdP (Keycloak/Zitadel), a provider identity adapter and admin-only funding guard at ingress. SQS remains an internal trusted transport, while provider identity carried by events must be checked against wallet scope.
+HTTP wallet routes require the `jungle-admin` role, including opening credits and reconciliation. Wager submission requires `jungle-provider` and an exact token `provider_id` match. Transaction lookup by provider is similarly scoped; internal-ID lookup is admin-only. Health endpoints are public. The token verifier accepts **RS256** with configured `iss`, `aud`, `exp`, `nbf`, signature and an external HTTPS JWKS endpoint (short-lived cache). There is **no local password database**. A controlled local test allows a loopback HTTP JWKS; never use this for a live IdP.
+
+The only insecure bypass requires **all three** of `ALLOW_INSECURE_TEST_AUTH=1`, `NODE_ENV=test` and a `DB_NAME` ending in `_test`. It is used only by disposable CI correctness fixtures. Missing IdP configuration fails closed on protected endpoints. Production deployment requires a reachable external IdP, TLS, protected secrets and token issuance; the example three-node Compose stack intentionally does not claim to provide an IdP.
+
+SQS is treated as an internal trusted transport per the challenge; it retains the same domain-level provider/reference checks as HTTP. Network/IAM boundary control remains an operational responsibility. Authentication is worth zero rubric points.
 
 ## Observability
 
-Liveness and readiness endpoints exist. Worker logs are structured JSON in most failure paths. Comprehensive business counters, Outbox lag, retry metrics and correlation across endpoints are **not yet implemented**.
+`GET /health/live` and `GET /health/ready` separate liveness and dependency readiness. The `GET /internal/metrics` endpoint is protected by `METRICS_TOKEN` (min 12 characters), uses constant-time comparison and reports durable transaction status counts, Inbox volume, retry counts, pending Outbox/age, approximate DLQ state and process-local financial metrics. It intentionally omits player identities and monetary payloads. This is a protected JSON diagnostics endpoint, **not** Prometheus/OpenTelemetry. Correlation-rich structured request logging and distributed tracing are still gaps relative to the official observability requirements.
 
-## Test proof and unknowns
+## Reconciliation and snapshots
 
-GitHub Actions runs real Postgres migrations, domain tests, HTTP integration tests, a three-process concurrent load test, and a real MiniStack FIFO SQS end-to-end integration test. The multi-process test sends 50 identical requests, disputes one wallet and drives separate wallets in parallel.
+Opening a wallet writes an initial ledger credit in the same SQL transaction. Reconciliation now reads the materialized balance and append-only ledger sum inside **one PostgreSQL REPEATABLE READ transaction**, avoiding false mismatches when concurrent wagers commit between the two reads. A real-Postgres HTTP concurrency regression guards this behavior. Migrations have `down()` methods and are exercised on a disposable empty database in the correctness workflow.
 
-Proof still missing: worker crash precisely after commit/before ACK, crash after publish/before flag, DLQ redrive, 2+ simultaneous Outbox publishers and restart reconciliation. These gaps matter under sections 10-14 of the official rubric.
+## Measured evidence and limitations
 
-The health-endpoint-only k6 script is **not** a financial throughput benchmark. The official rubric assigns no fixed RPS target; 100k/200k VUs are an internal stretch goal, not a Jungle Gaming requirement. Do not claim those tests have run.
+The successful correctness workflow verifies 39 Money/Wallet unit tests, financial HTTP/PostgreSQL integration, three independent Bun/NestJS processes including 50 duplicate BETs, RS256 JWT/role/provider access tests and MiniStack SQS Inbox/Outbox, crash/DLQ/publisher recovery. See [requirements audit](docs/REQUIREMENTS_AUDIT.md) for exact stage counts and current run links.
 
-## PostgreSQL deadlock correction (found by three-process CI)
+The optional **historical pre-authentication** 100-VU experiment ran on a GitHub-hosted runner (5-minute hold with ramps) at about **665.01 HTTP requests/s**, p95 **54.45 ms**, p99 **69.78 ms**, zero reported technical errors, and a passing final wallet/ledger reconciliation. Those figures apply only to the previous unauthenticated run and its particular environment. The JSON summary file failed to save due to a container permission problem, although the k6 text metrics are in the job log. The workflow is now manual-only and requires short-lived real tokens; we did **not** retest the load after authentication.
 
-The first three-process test discovered a real lock inversion: concurrent `wager_transactions` INSERTs take a foreign-key `KEY SHARE` lock on the wallet row, after which each transaction requested `FOR UPDATE` on that same row. Those two requests can deadlock, causing HTTP 500 (rather than a financial rejection). The wagering path now uses `FOR NO KEY UPDATE`, which serializes updates to balance and version without conflicting with the existing FK `KEY SHARE`. The 50-identical-BET and two-distinct-BET three-process tests guard against regression.
+The new [Dockerfile](Dockerfile) and [three-instance Compose overlay](docker-compose.cluster.yml) permit a reproducible deployment demonstration after supplying an external IdP. The CI validates the configuration and builds the image, but this is **not** proof that a three-node Compose deployment with a real IdP has been exercised. The existing three-process integration test independently confirms financial concurrency.
+
+Remaining non-eliminatory gaps: a dedicated `WagerTransaction` aggregate with explicit legal transitions and persistence ports, deeper request-level correlation logs/Prometheus metrics, full SIGTERM interruption/restart matrix and a deployment exercise against an external IdP. No claim of 100k/200k virtual users, production hardening or exactly-once transport delivery is made.

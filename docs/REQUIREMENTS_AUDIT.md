@@ -1,36 +1,33 @@
-# Official Jungle Gaming requirements audit
+# Auditoria de conformidade — Jungle Gaming
 
-**Authority:** [junglegaming/backend-challenge README](https://github.com/junglegaming/backend-challenge/blob/main/README.md), especially sections 4–14. **Audit basis:** code on `feat/wallet-ledger-performance`; test counts refer to GitHub Actions and are not a performance score. This file is an explicit coverage map, not a substituted grading rubric.
+**Fonte:** [enunciado oficial, seções 4–14](https://github.com/junglegaming/backend-challenge/blob/main/README.md). **Escopo:** branch `feat/wallet-ledger-performance` em 08/11/2026. Comparação de código e logs; não substitui avaliação da Jungle nem certifica produção.
 
-| Official area (maximum) | Current evidence | Unverified / incomplete |
+| Critério (peso) | Evidência concreta | Limite / risco residual |
 |---|---|---|
-| Financial correctness (20) | Money + Wallet unit tests; ledger CHECKs and immutable trigger; API BET/WIN/LOSS/REFUND/ROLLBACK and reconciliation | WagerTransaction domain state machine is represented in service/SQL, not full encapsulated class; internal OPENING transaction record model needs review |
-| Concurrency (20) | Postgres wallet lock; 2x80 same-wallet dispute; 30 concurrent debits; **50 identical HTTP wagers across 3 actual Bun processes** when CI is green | Worker crash/restart races and concurrent Outbox publishers still needed |
-| Idempotency (15) | PostgreSQL uniqueness, canonical payload hash, Inbox dedup, same-key and conflict tests | Provider-scoped key semantics and extra failure-path replays to audit |
-| Messaging and failures (15) | Real MiniStack FIFO receive, Inbox, Outbox, published events, retry workers | DLQ redrive, SIGTERM in-flight, after-commit crash, after-publish crash, concurrent publishers |
-| Domain modeling and architecture (10) | Money, Wallet, ledger domain; `ARCHITECTURE.md`; no global lock | Extract business transitions from large service into explicit WagerTransaction aggregate and ports |
-| Tests (10) | Unit, real PostgreSQL, HTTP, MiniStack e2e; multi-process test | Deterministic fault-injection and multiple publishers |
-| Observability (5) | Health checks; some structured worker logs | Required counters: status, duplicate, retries, DLQ, lock conflicts, outbox lag, processing latency |
-| Documentation (5) | README, architecture, trade-offs, performance goals, CI commands | Final performance report and benchmark method/results when executed |
+| Correção financeira (20) | `Money` decimal, wallet, ledger imutável por trigger, constraints, Opening e BET/WIN/LOSS/REFUND/ROLLBACK, rejeições e reconciliação `REPEATABLE READ` | Estado WagerTransaction ainda no serviço/SQL, não em aggregate dedicado |
+| Concorrência (20) | `FOR NO KEY UPDATE`, versionamento, 50 apostas iguais em 3 processos e 2 apostas de 80 para saldo 100, wallets independentes | Não é benchmark de throughput de três containers |
+| Idempotência (15) | hash canônico, unicidade no DB, replay sem movimentação duplicada, chave conflitante e Inbox em transação | `idempotency_key` global, não escopo por provedor |
+| Mensageria e falhas (15) | MiniStack FIFO, Inbox, Outbox pós-commit, DLQ, morte pós-COMMIT/pré-ACK, recuperação com 2 publishers | Falta matriz completa de `SIGTERM` e prova contra AWS SQS gerenciado |
+| Modelagem e arquitetura (10) | entidades Money/Wallet/Ledger, eventos tipados, MikroORM, decisão de locks em `ARCHITECTURE.md` | `WageringService` concentra regras e SQL; menor separação que a concorrente |
+| Testes (10) | CI com Postgres 17 real, SQS MiniStack, typecheck, transações, locks, falhas e JWT; migrations reversíveis testadas a partir do novo CI | Sem garantia contra todos os cenários de produção; sem suíte real do IdP externo |
+| Observabilidade (5) | live/ready, métricas agregadas por status, retry, DLQ, outbox lag e endpoint ops protegido | Sem Prometheus padrão e correlação consistente de logs/request |
+| Documentação (5) | README, arquitetura, invariantes, comparativo, limitações, dados da carga e links do CI | Validação de Compose multinó exige IdP externo |
 
-## Important clarifications from the official rubric
+## Resultado dos últimos testes
 
-1. The Jungle score is **100 points** across 8 weighted categories: 20/20/15/15/10/10/5/5. This is the *company's published weighting*, not our score.
-2. **Authentication is worth 0 points**. It is acceptable to defer it **if** the decision and a proposed IdP integration are clearly documented in `ARCHITECTURE.md`. No homemade password table.
-3. **Load tests are optional differentiators.** The company specifies **no RPS or 100k/200k-VU performance threshold**. Our 5-minute p95/p99 targets are internal and do not belong in the official acceptance column.
-4. A passing CI run doesn't eliminate the company's disqualification risks. Especially important: correct operation with >=3 processes, no double debit/credit, no negative balance and Outbox after commit.
-5. **No score prediction is guaranteed**. A credible final estimate needs explicit supporting evidence from all CI scenarios and any load report before PR merge/submission.
+A [execução prévia com sucesso](https://github.com/rafael-mindahead/JungleTest/actions/runs/42504466932) aprovou: 39 unitários; 19 testes PostgreSQL/HTTP (outros arquivos da pasta ficam `skip` sem MiniStack); 3 RS256/autorização; 3 de processos independentes; 1 end-to-end MiniStack; 3 casos de crash, DLQ e publishers, sem falhas. A nova regressão de snapshot eleva os testes PostgreSQL/HTTP executáveis para **20**, sujeita ao novo CI verde. Os scripts de carga não são rodados em cada commit.
 
-## Suggested release gates before marking the PR ready
+A execução [100 VUs pré-JWT](https://github.com/rafael-mindahead/JungleTest/actions/runs/42503672224) registrou **279.431 requests / 665,01 RPS / p95 54,45 ms / p99 69,78 ms / 0% erros técnicos** e reconciliação final verde. A exportação do arquivo JSON não ocorreu por permissão; os valores constam no log do job. Após JWT, `ADMIN_TOKEN` e `PROVIDER_TOKEN` são exigidos pelos scripts, e o workflow de baseline só pode ser acionado manualmente. 200 mil usuários **não** foram testados.
 
-- 50 replays and three processes tested together with `wallet.balance == ledger`.
-- Crash after DB commit and before ACK; restart and repeat yield one ledger effect.
-- 2 publishers, no lost event; forced duplicate publication harmless at receiver.
-- Poison message reaches configured DLQ; graceful worker shutdown.
-- Metrics include outbox lag, status/retry/duplicate/lock counts and processing latency.
-- All migrations and reverse migrations tested on disposable database.
-- README, ARCHITECTURE, CI results, assumptions and any optional benchmark evidence updated.
+## Faixa de pontuação — apenas estimativa
 
-### CI regression discovered and fixed
+Os pesos oficiais somam **100**, mas a nota exata só a Jungle atribui. Na inspeção atual, uma faixa de **84 a 90/100** é plausível se o novo CI permanecer verde: correção/concorrência/idempotência fortes; perdas mais prováveis em aggregate `WagerTransaction`, observabilidade e alguns aspectos operacionais. Essa estimativa **não** significa aprovação oficial, superioridade definitiva sobre outras submissões ou ausência de critérios eliminatórios inéditos.
 
-Initial three-process execution [run 42499052753](https://github.com/rafael-mindahead/JungleTest/actions/runs/42499052753) exposed a PostgreSQL deadlock when two *distinct* bets raced on one wallet. Correctness evidence from the 50 duplicate test does not excuse this failure. The financial lock was adjusted from `FOR UPDATE` to `FOR NO KEY UPDATE`; consult the newest successful workflow run before claiming this issue resolved.
+A própria Jungle declara **0 pontos para autenticação** e carga **opcional**, sem limite de RPS ou de usuários virtuais. Prioridade é correção, não perseguir 200 mil VUs.
+
+## Gates de entrega
+
+1. Workflow de correção verde no último commit (incluindo reversão de migrations, concorrência e MiniStack).
+2. Resultado das suites e limitações coerentes com README e arquitetura.
+3. Revisão de segurança humana e PR antes de promover à `main`.
+4. Deploy com IdP externo, correlacionamento de logs/Prometheus e testes da AWS gerenciada permanecem **fora da evidência entregue**; não declarar produção pronta.

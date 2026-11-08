@@ -1,48 +1,38 @@
-# Financial performance benchmark
+# Performance financeira — evidência e limites
 
-## What the tests mean
+A Jungle Gaming considera carga **um diferencial opcional**, sem RPS mínimo nem meta de 100 mil/200 mil usuários. Não faremos mais escalada de carga como objetivo do desafio.
 
-There are two separate workload scripts:
-- `scripts/bench/http-health.js`: measures **only HTTP transport** through `/health/live`.
-- `scripts/bench/financial.js`: exercises **real PostgreSQL financial transactions** (BET, WIN, LOSS, REFUND, ROLLBACK plus idempotent replays) through the NestJS API.
+## Evidência histórica, antes da autenticação JWT
 
-The Jungle Gaming challenge has **no official minimum RPS or 100k/200k-VU goal**. The 5-minute p95 under 500 ms, p99 under 1000 ms and technical error rate under 1% are our **internal** budgets. Correctness, idempotency and consistency always outweigh throughput.
+[GitHub Actions 100-VU baseline](https://github.com/rafael-mindahead/JungleTest/actions/runs/42503672224), sobre a branch pré-JWT:
+- **100 usuários virtuais** no máximo, **5 minutos sustentados** com 1 minuto de rampa em cada ponta (7 min total).
+- **279.431 requisições HTTP**, cerca de **665,01 req/s** ao longo de 420 segundos.
+- `http_req_duration`: **p95 54,45 ms**, **p99 69,78 ms**; `financial_technical_error_rate`: **0,00%**.
+- Reconciliação posterior de wallet e ledger **aprovada** no job.
+- As requisições exercitaram BET, WIN, LOSS, REFUND, ROLLBACK e replays idempotentes contra PostgreSQL real. SQS/Outbox foram verificados em testes separados, **não medidos sob este throughput**.
 
-## Local preparation (disposable test database)
+**Qualificações:** resultado de um runner GitHub, não de infraestrutura dedicada; usuários virtuais são geradores de carga, não contas simultâneas distintas. A exportação do resumo `k6-baseline.json` falhou por permissão de volume (e o workflow não falhou por isso); os números acima foram extraídos dos logs e a reconciliação aconteceu. A configuração futura define o UID do container e exige o JSON, mas **não foi reexecutada**, conforme decisão de encerrar performance.
 
-Start PostgreSQL (and optional MiniStack), create the test DB once, run migrations, start a dedicated API using `DB_NAME=jungle_wagering_test` and leave it running. Do NOT point scripts at production.
+## Como reproduzir de forma segura, apenas se necessário
+
+Requer uma API com JWT RS256 validado por IdP externo e um `*_test` DB isolado. A montagem é feita fora de produção:
 
 ```bash
 docker compose up -d
-docker compose exec -T postgres psql -U jungle -d postgres -c "CREATE DATABASE jungle_wagering_test"
 DB_NAME=jungle_wagering_test bun run db:migrate
-DB_NAME=jungle_wagering_test bun run src/main.ts
-```
-
-In a second terminal:
-
-```bash
-DB_NAME=jungle_wagering_test BENCH_WALLETS=12 bun scripts/bench/seed-financial.ts
-PROFILE=smoke k6 run scripts/bench/financial.js
+# Inicie a API dedicada com DB_NAME=jungle_wagering_test e OIDC_* configurados.
+export ADMIN_TOKEN="<token-admin-curta-duracao>"
+export PROVIDER_TOKEN="<token-jungle-provider>"
+export BENCH_PROVIDER_ID=bench-provider
+DB_NAME=jungle_wagering_test bun scripts/bench/seed-financial.ts
+PROFILE=smoke PROVIDER_TOKEN="$PROVIDER_TOKEN" k6 run scripts/bench/financial.js
 DB_NAME=jungle_wagering_test bun scripts/bench/reconcile-financial.ts
 ```
 
-`bun run test:load` invokes the same k6 script (requires k6 installed). The seed tool generates unique wallets with opening balance `1000.00 BRL`, creates `artifacts/bench/wallets.json`, and restricts seeding to a local `*_test` database. The reconciliation tool queries the financial API after load and fails if even one stored wallet balance differs from the append-only ledger reconstruction.
+A claim `provider_id` do `PROVIDER_TOKEN` deve ser igual ao `BENCH_PROVIDER_ID`. O seed usa `ADMIN_TOKEN` para abertura de carteiras; a reconciliação também exige admin. O arquivo fixture `artifacts/bench/wallets.json` é gerado e não pode apontar para dados reais. Não inclua tokens em commits, relatórios, logs ou screenshots.
 
-The financial script has `smoke` (3 VUs), `pilot` (25 VUs, 40-second steady segment), `baseline` (100 VUs, 5-minute steady segment), `ramp` (1000 VUs, 5-minute steady segment), and gated `peak100k`/`peak200k` profiles. `CONFIRM_PEAK=yes` is necessary but not proof the load generator can sustain those users. Many wallets may share a small number of VUs; the fixture must be sized for meaningful wallet concurrency. `HOT_WALLET` is not implied by this script; to test a hot wallet, seed one wallet explicitly and use that fixture.
+Perfis disponíveis em `scripts/bench/financial.js`: smoke, pilot, baseline, ramp, peak100k, peak200k, mas **100k/200k nunca foram validados** e não fazem parte da entrega. Os últimos perfis exigem opt-in explícito e geradores dimensionados. O workflow `.github/workflows/financial-baseline.yml` é **somente manual** e exige IdP acessível e credenciais efêmeras via vars/secrets do Actions; não é gate do PR.
 
-The k6 mix is one BET per iteration followed by WIN, LOSS, REFUND or ROLLBACK and a periodic duplicate. Business rejections (HTTP 422) are counted separately from transport/technical failures. Successful operations are tracked by the `financial_processed_operations` counter. See emitted k6 metrics for p50/p95/p99 and requests/s, and collect CPU/RSS/file descriptors separately using `scripts/bench/sample-process.sh`.
+## Critérios internos (não são requisitos oficiais)
 
-**Limitations:** This benchmark exercises financial HTTP and PostgreSQL; the asynchronous SQS worker and publication of Outbox messages are validated by separate integration tests, not measured for throughput in the load script. The test database must be isolated and the API must have worker loops disabled unless a specific all-components experiment is intended.
-
-## Reproducible measurements
-
-Use the workflow in `.github/workflows/financial-correctness.yml` for the short financial smoke and a 25-VU pilot; GitHub Actions uploads both k6 summaries, a 5-second-resolution Bun CPU/RSS/FD sample and wallet reconciliation reports as artifacts. Each profile is followed by ledger reconciliation, and any invariant failure fails the job. **A successful smoke is evidence of request correctness under a small load, not a 5-minute baseline, not a production throughput claim, and not 100k/200k VUs.**
-
-For larger experiments record commit SHA, Bun/runtime/kernel version, CPU/RAM, PostgreSQL/WAL settings, connection pool, k6 generator topology, wallets seeded, traffic mix, warm-up, exact VU and RPS, p50/p95/p99, technical and business failure rates, CPU/RSS/GC/FD, DB contention and Outbox lag. Reconcile all wallets after the run. Do not suppress PostgreSQL WAL or synchronous commits for speed.
-
-## Scale-up decision gates
-
-The final aspiration is 200,000 virtual users, not a verified capability. Increase load only when the preceding stage passes latency, technical-error and post-load reconciliation gates. Start with the isolated 3-VU smoke, then 25-VU pilot in CI, then run the 100-VU five-minute baseline on a controlled dedicated environment. The 1,000-VU ramp should happen only after baseline bottlenecks and DB pool behavior are understood. The 100k/200k stages require explicitly authorized production-like targets and independent, distributed load generators; a GitHub-hosted runner is **not** suitable evidence of such scale.
-
-Do not equate VUs to RPS or unique registered users. For each stage capture 5-minute steady-state measurements, exact RPS, concurrency, CPU saturation, heap/RSS, file descriptors, DB lock waits, row contention, SQS/Outbox lag (where included), failure distribution and the final wallet/ledger invariant. A test with financial HTTP only does not validate asynchronous message throughput. When a stage fails, record the failure and fix it rather than weakening acceptance thresholds.
+Para qualquer futura execução, registre VUs, RPS, distribuição p50/p95/p99, erro técnico, rejeições de negócio, saturação do banco, CPU/RSS/FD e a reconciliação final. Os limites internos existentes no script são p95 < 500ms, p99 < 1000ms e erro técnico < 1%; a correção do ledger tem precedência. Nenhuma nova promessa de capacidade de usuários é feita.
