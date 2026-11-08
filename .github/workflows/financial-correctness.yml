@@ -62,6 +62,8 @@ jobs:
         run: bun run test:domain
       - name: Validate HTTP and message input contracts
         run: bun test test/contract
+      - name: Test request correlation and stable error codes
+        run: bun test src/observability/http-observability.test.ts
       - name: Apply real PostgreSQL migrations
         run: bun run db:migrate
       - name: Verify reversible migrations on disposable PostgreSQL
