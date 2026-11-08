@@ -80,6 +80,18 @@ Três melhorias inspiradas pela inspeção crítica da solução concorrente, im
 - **Contrato compartilhado** em `src/wagering/wager-input.ts`: validações de moeda, tipo, UUID, referência obrigatória e autorreferência são as mesmas para HTTP e SQS, sem alterar a idempotência. A concorrente utiliza Zod; optamos por funções tipadas sem dependência adicional.
 - **Observabilidade HTTP** em `src/observability/http-observability.ts`: `X-Correlation-Id`, logs estruturados JSON contendo apenas template da rota, status e latência; erros `{error:{code,message,correlationId}}`, sem divulgar detalhes de falhas internas. Desative logs de acesso com `HTTP_ACCESS_LOGS=0` quando necessário. Ainda não adotamos Prometheus/OpenTelemetry.
 
+## Optional Prometheus and OpenTelemetry
+
+A protected Prometheus exposition is available at GET /internal/prometheus
+(Bearer METRICS_TOKEN); the existing JSON endpoint remains unchanged.
+W3C traceparent is followed across HTTP settlement, SQL Outbox and SQS using
+a bounded, opt-in OTLP/HTTP JSON exporter. The telemetry exporter does not
+use the full OpenTelemetry SDK. An optional Docker Compose overlay starts
+Prometheus and an OpenTelemetry Collector. See
+[observability setup](docs/OBSERVABILITY.md) for configuration and limitations.
+
+No new large-scale benchmark was run; historical k6 figures predate tracing.
+
 ## Encerramento do desafio
 
 - [Auditoria item a item e faixa de nota estimada](docs/REQUIREMENTS_AUDIT.md)
