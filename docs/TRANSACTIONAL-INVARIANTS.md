@@ -1,31 +1,38 @@
-# Wallet + ledger: transactional guarantees
+# Transactional guarantees and current limitations
 
-## SQL model
-- Each wallet is unique by (player_id, currency), its balance cannot be negative, and its version is positive.
-- Ledger rows are append-only (BEFORE UPDATE/DELETE trigger) with FK, UNIQUE(wallet_id, transaction_id), positive amount, non-negative snapshots and an arithmetic CHECK.
-- No application operation should update the wallet without appending the corresponding ledger row in the **same SQL transaction**.
-- A nonzero initial wallet balance creates an opening CREDIT ledger row in the same transaction as wallet creation. Opening does not increase version 1.
+## Confirmed by real PostgreSQL integration tests
 
-## Concurrency
-PostgresWalletRepository.apply() forks the MikroORM EntityManager and starts a database transaction. A SELECT ... FOR UPDATE takes a row-level lock on the wallet; only after the lock is acquired does it check previous ledger transaction IDs. Distinct concurrent debits then re-evaluate the latest balance. The wallet update, version increment and ledger INSERT are committed together.
+- `wallets` enforces unique (player, currency), nonnegative balance and positive version.
+- `wallet_ledger_entries` enforces foreign keys, positive amounts, arithmetic equality, unique (wallet_id, transaction_id) and rejects UPDATE/DELETE through a trigger.
+- Each movement locks its wallet row using `SELECT ... FOR UPDATE`, then commits wallet, ledger, wagering outcome and Outbox events atomically.
+- Same-wallet competing debits are serialized; a failed debit never overdraws the wallet.
+- An initial nonzero wallet balance creates an opening CREDIT ledger row as part of wallet creation.
+- `wager_transactions` stores provider/external transaction IDs, payload hashes, idempotency keys and terminal outcomes.
+- Duplicate HTTP wagers with the same key and canonical payload return the committed outcome; conflicting payloads fail with 409.
+- SQS Inbox consumes a request before the ledger update in the *same transaction*, then SQS message acknowledgment happens after commit.
+- Out-of-order REFUND can wait for a referenced BET; the reference worker retries using persistent due dates.
+- Outbox writes are committed in the same transaction and an independent publisher pushes messages into a FIFO queue.
 
-The integration suite verifies: two 80.00 debits from 100.00, 30 contending 1.00 debits against 10.00, twenty duplicate requests with the same transaction ID, conflicting duplicate payloads, ledger immutability and DB balance constraints.
+## Test evidence
 
-## Boundaries / unfinished
-- Idempotency currently covers **committed successful movements** per wallet and transaction ID. Durable recording of rejected requests, external events, replay windows, SQS Inbox/Outbox, and mapping request identifiers into an end-to-end API remain pending.
-- The trigger protects ledger history against accidental UPDATE/DELETE via normal DML. Database administrators with DDL privileges can bypass or disable a trigger, so least-privilege roles and audit logging still matter.
-- A lock serializes transactions on **one wallet**. High contention on the same wallet has a throughput ceiling. Global throughput can increase with many independent wallets, but no throughput claim is made before measurement.
-- Persisting opening CREDIT means a database restored from an older snapshot without matching ledger rows needs reconciliation, not blind backfilling.
-- Run actual DB tests only on a disposable database named with the suffix `_test`.
+See [the CI workflow](../.github/workflows/financial-correctness.yml): 39 unit tests, 12 PostgreSQL integration tests and one MiniStack SQS e2e test passed in the recorded run. **These are correctness tests, not load benchmarks.**
 
-## Run with a local test DB
-Run Docker Compose as usual. Create the disposable database once:
+## Important boundaries
 
+- **Not production-safe:** no authentication, provider signatures, permission checks, rate limiting, or trusted balance-funding controls. The wallet-creation endpoint accepts an initial balance solely for development.
+- The FIFO queue and Outbox are **at least once**, not exactly once. A crash after publishing but before marking the Outbox row can cause duplicate messages. Consumers need Inbox/idempotency checks.
+- The idempotency model should be reviewed with the official API contract, including whether keys must be scoped per provider and how replay windows are defined.
+- Cross-wallet distributed atomicity, full SQS DLQ redrive testing, poison messages and worker crash-recovery have not been exhaustively tested.
+- A ledger trigger prevents ordinary accidental DML edits but a sufficiently privileged database operator can disable the trigger.
+- The retry worker has a finite attempt policy; long-delayed referenced transactions need a documented operational resolution policy.
+- High contention on a *single wallet* serializes on that row, and could limit throughput. Horizontal scaling requires many wallets and production measurements.
+- No benchmark has demonstrated 100k/200k financial virtual users. A health-endpoint load test cannot demonstrate financial throughput.
+
+## Running tests without touching the development database
+
+Use a database ending in `_test`. In CI, PostgreSQL and MiniStack start as disposable services.
 ```bash
-docker compose up -d postgres
-docker compose exec -T postgres psql -U jungle -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'jungle_wagering_test'" | grep -q 1 || docker compose exec -T postgres psql -U jungle -d postgres -c "CREATE DATABASE jungle_wagering_test"
 DB_NAME=jungle_wagering_test bun run db:migrate
-DB_NAME=jungle_wagering_test RUN_DB_TESTS=1 bun test test/integration
+DB_NAME=jungle_wagering_test bun run test:integration
+DB_NAME=jungle_wagering_test SQS_ENDPOINT=http://127.0.0.1:4566 RUN_SQS_TESTS=1 bun test test/integration/financial-sqs.test.ts
 ```
-
-The test database intentionally retains append-only ledger rows; drop the whole disposable database to reset it. These tests require a real Postgres server, not an in-memory mock.
