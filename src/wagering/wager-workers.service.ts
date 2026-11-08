@@ -84,8 +84,10 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
                 typeof envelope.data.idempotencyKey !== 'string') {
               throw new Error('Invalid SQS envelope');
             }
+            // Narrow once before entering the async span callback.
+            const requestKey = envelope.data.idempotencyKey as string;
             await span.run(async () => {
-              await this.wagers.submit(envelope.data, envelope.data.idempotencyKey, {
+              await this.wagers.submit(envelope.data, requestKey, {
                 messageId: envelope.messageId, consumerName: 'wager-processor',
               });
               if (msg.ReceiptHandle) {
