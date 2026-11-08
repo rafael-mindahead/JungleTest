@@ -46,5 +46,5 @@ jobs:
         run: bun run test:domain
       - name: Apply real PostgreSQL migrations
         run: bun run db:migrate
-      - name: Real PostgreSQL concurrency and idempotency tests
+      - name: Real PostgreSQL financial API and concurrency tests
         run: bun run test:integration
