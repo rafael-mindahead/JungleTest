@@ -45,8 +45,18 @@ function line(lines: string[], name: string, value: number, labelSet?: Record<st
 /** Labels are bounded: route is an Express template, never a request URL. */
 export function recordHttpRequest(method: string, route: string, statusCode: number, durationMs: number): void {
   const safeMethod = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/.test(method) ? method : 'OTHER';
-  const safeRoute = route.startsWith('/') && route.length <= 160 &&
-    /^[/A-Za-z0-9:_.*()-]+$/.test(route) ? route : 'unmatched';
+  // Only registered ROUTE TEMPLATES: never let a request URL, ID, or token
+  // become a Prometheus label (high-cardinality and privacy risk).
+  const templates = new Set([
+    '/health/live', '/health/ready',
+    '/wallets', '/wallets/:walletId', '/wallets/:walletId/ledger',
+    '/wallets/:walletId/reconciliation',
+    '/:walletId', '/:walletId/ledger', '/:walletId/reconciliation',
+    '/wagering/transactions', '/wagering/transactions/:transactionId',
+    '/providers/:providerId/wagering/transactions/:externalTransactionId',
+    '/internal/metrics', '/internal/prometheus', '/metrics', '/prometheus',
+  ]);
+  const safeRoute = templates.has(route) ? route : 'unmatched';
   const status = Number.isInteger(statusCode) && statusCode >= 100 && statusCode < 600
     ? String(statusCode) : 'unknown';
   const key = JSON.stringify([safeMethod, safeRoute, status]);
