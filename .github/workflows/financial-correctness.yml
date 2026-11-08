@@ -52,6 +52,10 @@ jobs:
         run: bun run db:migrate
       - name: Real PostgreSQL financial API and concurrency tests
         run: bun run test:integration
+      - name: Three real NestJS processes and 50 concurrent duplicate wagers
+        env:
+          RUN_MULTIPROCESS_TESTS: "1"
+        run: bun test test/integration/financial-multiprocess.test.ts
       - name: Start MiniStack SQS emulator
         run: |
           docker run --rm -d --name jungle-ci-ministack -p 127.0.0.1:4566:4566 ministackorg/ministack:latest
