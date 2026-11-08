@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
-import { MikroORM, type EntityManager } from '@mikro-orm/core';
+import { MikroORM } from '@mikro-orm/core';
+import type { EntityManager } from '@mikro-orm/postgresql';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Money } from '../domain/shared/value-objects/money.js';
 import { Wallet } from '../domain/wallets/wallet.js';
@@ -143,7 +144,8 @@ export class WageringService {
       nonempty(inbox.messageId, 'messageId', 250);
       nonempty(inbox.consumerName, 'consumerName', 100);
     }
-    return this.orm.em.fork().transactional(async (em) => {
+    return this.orm.em.fork().transactional(async (em0) => {
+      const em = em0 as unknown as EM;
       if (inbox) {
         const inserted = await em.execute<Array<{ message_id: string }>>(
           'INSERT INTO wager_inbox (consumer_name, message_id, payload_hash) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING message_id',
@@ -350,7 +352,8 @@ export class WageringService {
   async retryPending(max = 10): Promise<number> {
     let count = 0;
     for (let i = 0; i < max; i++) {
-      const didProcess = await this.orm.em.fork().transactional(async (em) => {
+      const didProcess = await this.orm.em.fork().transactional(async (em0) => {
+      const em = em0 as unknown as EM;
         const pending = await em.execute<WagerRow[]>([
           'SELECT * FROM wager_transactions',
           "WHERE status = 'PENDING_REFERENCE' AND next_attempt_at <= NOW()",
