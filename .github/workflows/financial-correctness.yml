@@ -11,7 +11,7 @@ permissions:
 jobs:
   domain-and-postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
@@ -33,6 +33,10 @@ jobs:
       DB_USER: jungle
       DB_PASSWORD: jungle_dev
       RUN_DB_TESTS: "1"
+      SQS_ENDPOINT: http://127.0.0.1:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -48,3 +52,23 @@ jobs:
         run: bun run db:migrate
       - name: Real PostgreSQL financial API and concurrency tests
         run: bun run test:integration
+      - name: Start MiniStack SQS emulator
+        run: |
+          docker run --rm -d --name jungle-ci-ministack -p 127.0.0.1:4566:4566 ministackorg/ministack:latest
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:4566/_ministack/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs jungle-ci-ministack
+          exit 1
+      - name: Provision FIFO queues and dead-letter queue
+        run: bun run sqs:setup
+      - name: End-to-end FIFO SQS Inbox and Outbox test
+        env:
+          RUN_SQS_TESTS: "1"
+        run: bun test test/integration/financial-sqs.test.ts
+      - name: MiniStack diagnostics on failure
+        if: failure()
+        run: docker logs jungle-ci-ministack || true
