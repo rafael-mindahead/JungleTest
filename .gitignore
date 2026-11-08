@@ -21,3 +21,6 @@ reports/
 # Logs
 *.log
 npm-debug.log*
+
+# Local Prometheus credentials (never commit)
+observability/secrets/

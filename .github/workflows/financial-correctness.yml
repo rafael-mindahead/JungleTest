@@ -54,6 +54,12 @@ jobs:
           OIDC_AUDIENCE: jungle-financial-api
           OIDC_JWKS_URI: https://issuer.example.test/realms/jungle/certs
         run: docker compose -f docker-compose.yml -f docker-compose.cluster.yml config --quiet
+      - name: Validate optional monitoring Compose overlay
+        env:
+          OIDC_ISSUER: https://issuer.example.test/realms/jungle
+          OIDC_AUDIENCE: jungle-financial-api
+          OIDC_JWKS_URI: https://issuer.example.test/realms/jungle/certs
+        run: docker compose -f docker-compose.yml -f docker-compose.cluster.yml -f docker-compose.observability.yml config --quiet
       - name: Build reproducible Bun application image
         run: docker build -t jungle-wagering:ci .
       - name: TypeScript static validation
@@ -64,6 +70,8 @@ jobs:
         run: bun test test/contract
       - name: Test request correlation and stable error codes
         run: bun test src/observability/http-observability.test.ts
+      - name: Test Prometheus exposition and OTLP traces
+        run: bun test src/observability/prometheus-metrics.test.ts src/observability/otel-tracing.test.ts
       - name: Apply real PostgreSQL migrations
         run: bun run db:migrate
       - name: Verify reversible migrations on disposable PostgreSQL

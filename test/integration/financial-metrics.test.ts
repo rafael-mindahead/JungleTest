@@ -62,5 +62,16 @@ dbDescribe('Finance operations metrics endpoint', () => {
     expect(metrics.body.deadLetterQueue.available).toBe(false); // MiniStack starts after DB test.
     expect(JSON.stringify(metrics.body)).not.toContain(playerId);
     expect(JSON.stringify(metrics.body)).not.toContain(wallet.body.id);
+    await request(app.getHttpServer()).get('/internal/prometheus').expect(401);
+    const scrape = await request(app.getHttpServer())
+      .get('/internal/prometheus')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    expect(scrape.headers['content-type']).toContain('text/plain');
+    expect(scrape.text).toContain('# TYPE jungle_wagering_result_total counter');
+    expect(scrape.text).toContain('jungle_wagering_duplicates_total');
+    expect(scrape.text).toContain('jungle_outbox_pending');
+    expect(scrape.text).not.toContain(playerId);
+    expect(scrape.text).not.toContain(wallet.body.id);
   }, 20000);
 });
