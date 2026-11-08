@@ -29,7 +29,7 @@ DB_NAME=jungle_wagering_test bun scripts/bench/reconcile-financial.ts
 
 `bun run test:load` invokes the same k6 script (requires k6 installed). The seed tool generates unique wallets with opening balance `1000.00 BRL`, creates `artifacts/bench/wallets.json`, and restricts seeding to a local `*_test` database. The reconciliation tool queries the financial API after load and fails if even one stored wallet balance differs from the append-only ledger reconstruction.
 
-The financial script has `smoke` (3 VUs), `baseline` (100 VUs), `ramp` (1000 VUs), and gated `peak100k`/`peak200k` profiles. `CONFIRM_PEAK=yes` is necessary but not proof the load generator can sustain those users. Many wallets may share a small number of VUs; the fixture must be sized for meaningful wallet concurrency. `HOT_WALLET` is not implied by this script; to test a hot wallet, seed one wallet explicitly and use that fixture.
+The financial script has `smoke` (3 VUs), `pilot` (25 VUs, 40-second steady segment), `baseline` (100 VUs, 5-minute steady segment), `ramp` (1000 VUs, 5-minute steady segment), and gated `peak100k`/`peak200k` profiles. `CONFIRM_PEAK=yes` is necessary but not proof the load generator can sustain those users. Many wallets may share a small number of VUs; the fixture must be sized for meaningful wallet concurrency. `HOT_WALLET` is not implied by this script; to test a hot wallet, seed one wallet explicitly and use that fixture.
 
 The k6 mix is one BET per iteration followed by WIN, LOSS, REFUND or ROLLBACK and a periodic duplicate. Business rejections (HTTP 422) are counted separately from transport/technical failures. Successful operations are tracked by the `financial_processed_operations` counter. See emitted k6 metrics for p50/p95/p99 and requests/s, and collect CPU/RSS/file descriptors separately using `scripts/bench/sample-process.sh`.
 
@@ -37,6 +37,12 @@ The k6 mix is one BET per iteration followed by WIN, LOSS, REFUND or ROLLBACK an
 
 ## Reproducible measurements
 
-Use the workflow in `.github/workflows/financial-correctness.yml` for the short financial smoke; GitHub Actions uploads the k6 summary and wallet reconciliation report as artifacts. **A successful smoke is evidence of request correctness under a small load, not a 5-minute baseline, not a production throughput claim, and not 100k/200k VUs.**
+Use the workflow in `.github/workflows/financial-correctness.yml` for the short financial smoke and a 25-VU pilot; GitHub Actions uploads both k6 summaries, a 5-second-resolution Bun CPU/RSS/FD sample and wallet reconciliation reports as artifacts. Each profile is followed by ledger reconciliation, and any invariant failure fails the job. **A successful smoke is evidence of request correctness under a small load, not a 5-minute baseline, not a production throughput claim, and not 100k/200k VUs.**
 
 For larger experiments record commit SHA, Bun/runtime/kernel version, CPU/RAM, PostgreSQL/WAL settings, connection pool, k6 generator topology, wallets seeded, traffic mix, warm-up, exact VU and RPS, p50/p95/p99, technical and business failure rates, CPU/RSS/GC/FD, DB contention and Outbox lag. Reconcile all wallets after the run. Do not suppress PostgreSQL WAL or synchronous commits for speed.
+
+## Scale-up decision gates
+
+The final aspiration is 200,000 virtual users, not a verified capability. Increase load only when the preceding stage passes latency, technical-error and post-load reconciliation gates. Start with the isolated 3-VU smoke, then 25-VU pilot in CI, then run the 100-VU five-minute baseline on a controlled dedicated environment. The 1,000-VU ramp should happen only after baseline bottlenecks and DB pool behavior are understood. The 100k/200k stages require explicitly authorized production-like targets and independent, distributed load generators; a GitHub-hosted runner is **not** suitable evidence of such scale.
+
+Do not equate VUs to RPS or unique registered users. For each stage capture 5-minute steady-state measurements, exact RPS, concurrency, CPU saturation, heap/RSS, file descriptors, DB lock waits, row contention, SQS/Outbox lag (where included), failure distribution and the final wallet/ledger invariant. A test with financial HTTP only does not validate asynchronous message throughput. When a stage fails, record the failure and fix it rather than weakening acceptance thresholds.
