@@ -61,6 +61,8 @@ export function safeRouteTemplate(value: unknown): string {
 export function recordHttpRequest(method: string, route: string, statusCode: number, durationMs: number): void {
   const safeMethod = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/.test(method) ? method : 'OTHER';
   const safeRoute = safeRouteTemplate(route);
+  const status = Number.isInteger(statusCode) && statusCode >= 100 && statusCode < 600
+    ? String(statusCode) : 'unknown';
   const key = JSON.stringify([safeMethod, safeRoute, status]);
   httpCounts.set(key, (httpCounts.get(key) ?? 0) + 1);
   const duration = Math.max(0, finite(durationMs) / 1000);
