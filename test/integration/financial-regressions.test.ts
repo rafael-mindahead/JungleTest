@@ -54,7 +54,7 @@ integrationDescribe('Financial HTTP regression and adversarial cases', () => {
       kind, money: { amount, currency: 'BRL' }, ...overrides,
     };
   }
-  const post = (body: unknown, key = randomUUID()) =>
+  const post = (body: object, key: string = randomUUID()) =>
     request(app.getHttpServer()).post('/wagering/transactions')
       .set('Idempotency-Key', key).send(body);
 
@@ -78,7 +78,7 @@ integrationDescribe('Financial HTTP regression and adversarial cases', () => {
   test('rejects malformed money, unsupported OPENING and missing key without database effects', async () => {
     const scope = await wallet();
     const base = wager(scope, 'BET', '1.00');
-    const invalid: unknown[] = [
+    const invalid: object[] = [
       { ...base, money: { amount: 1.00, currency: 'BRL' } },
       { ...base, money: { amount: '1e2', currency: 'BRL' } },
       { ...base, money: { amount: '1.001', currency: 'BRL' } },
