@@ -60,6 +60,8 @@ jobs:
         run: bun run typecheck
       - name: Money and Wallet unit tests
         run: bun run test:domain
+      - name: Validate HTTP and message input contracts
+        run: bun test test/contract
       - name: Apply real PostgreSQL migrations
         run: bun run db:migrate
       - name: Verify reversible migrations on disposable PostgreSQL

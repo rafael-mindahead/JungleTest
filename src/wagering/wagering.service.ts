@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { FinancialMetrics } from '../observability/financial-metrics.service.js';
-import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { Money } from '../domain/shared/value-objects/money.js';
 import { WagerTransaction, type WagerKind, type WagerStatus } from '../domain/wagering/wager-transaction.js';
+import { nonempty, uuid, parseInput, type WagerInput } from './wager-input.js';
 import { Wallet } from '../domain/wallets/wallet.js';
 import { InsufficientFundsError } from '../domain/wallets/wallet.errors.js';
 import { LedgerDirection, type WalletLedgerEntry } from '../domain/wallets/wallet-ledger-entry.js';
@@ -17,11 +18,6 @@ import {
 
 const UUID_RE = /^[a-f\d]{8}(-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 
-interface WagerInput {
-  providerId: string; externalTransactionId: string; playerId: string;
-  walletId: string; roundId: string; gameId: string; kind: WagerKind;
-  money: Money; referenceExternalTransactionId?: string;
-}
 interface WagerRow {
   id: string; provider_id: string; external_transaction_id: string;
   idempotency_key: string; payload_hash: string; wallet_id: string;
@@ -43,50 +39,6 @@ export interface WagerResult {
   failureCode?: string; idempotentReplay: boolean;
 }
 
-function nonempty(value: unknown, name: string, maxLength = 200): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > maxLength) {
-    throw new BadRequestException(name + ' must be a nonempty string (max ' + maxLength + ')');
-  }
-  return value;
-}
-function uuid(value: unknown, name: string): string {
-  const v = nonempty(value, name);
-  if (!UUID_RE.test(v)) throw new BadRequestException(name + ' must be UUID');
-  return v.toLowerCase();
-}
-function parseInput(raw: unknown): WagerInput {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new BadRequestException('Body must be an object');
-  }
-  const input = raw as Record<string, unknown>;
-  if (!['BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'].includes(String(input.kind))) {
-    throw new BadRequestException('Invalid transaction kind');
-  }
-  if (!input.money || typeof input.money !== 'object' || Array.isArray(input.money)) {
-    throw new BadRequestException('money must be a decimal amount and currency');
-  }
-  const monetary = input.money as Record<string, unknown>;
-  let money: Money;
-  try {
-    money = Money.from({ amount: monetary.amount as string, currency: monetary.currency as string });
-  } catch {
-    throw new BadRequestException('Invalid money: require nonnegative decimal string with two places and ISO currency');
-  }
-  if (!money.isPositive()) throw new BadRequestException('Transaction amount must be positive');
-  const kind = input.kind as WagerKind;
-  const reference = input.referenceExternalTransactionId === undefined
-    ? undefined : nonempty(input.referenceExternalTransactionId, 'referenceExternalTransactionId');
-  if (['REFUND', 'ROLLBACK'].includes(kind) && !reference) {
-    throw new BadRequestException('REFUND/ROLLBACK require referenceExternalTransactionId');
-  }
-  return {
-    providerId: nonempty(input.providerId, 'providerId', 128),
-    externalTransactionId: nonempty(input.externalTransactionId, 'externalTransactionId'),
-    playerId: uuid(input.playerId, 'playerId'), walletId: uuid(input.walletId, 'walletId'),
-    roundId: nonempty(input.roundId, 'roundId'), gameId: nonempty(input.gameId, 'gameId'),
-    kind, money, referenceExternalTransactionId: reference,
-  };
-}
 function sorted(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sorted);
   if (value && typeof value === 'object') {
