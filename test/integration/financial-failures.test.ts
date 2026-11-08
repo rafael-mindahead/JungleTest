@@ -6,7 +6,7 @@ import type { INestApplication } from '@nestjs/common';
 import { MikroORM } from '@mikro-orm/core';
 import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import {
-  DeleteMessageCommand, GetQueueAttributesCommand, GetQueueUrlCommand,
+  DeleteMessageCommand, GetQueueUrlCommand,
   ReceiveMessageCommand, SendMessageCommand, SQSClient,
 } from '@aws-sdk/client-sqs';
 import { AppModule } from '../../src/app.module.js';
@@ -157,13 +157,16 @@ onlyWithSqs('SQS crash, DLQ and publisher recovery against MiniStack', () => {
     const ledger = await rows<{ n: string }>(app,
       'SELECT COUNT(*)::text AS n FROM wallet_ledger_entries WHERE wallet_id = ?', [walletId]);
     expect(Number(ledger[0].n)).toBe(2);
-    const attrs = await sqs.send(new GetQueueAttributesCommand({
-      QueueUrl: requestUrl,
-      AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'],
-    }));
-    expect(Number(attrs.Attributes?.ApproximateNumberOfMessages ?? 0)).toBe(0);
-    expect(Number(attrs.Attributes?.ApproximateNumberOfMessagesNotVisible ?? 0)).toBe(0);
+    // Queue-level approximate counters include unrelated messages and can lag.
+    // After stopping this worker, assert that this PARTICULAR envelope does not
+    // appear after its two-second crash visibility period has elapsed.
     await stopApp(worker);
+    await sleep(2300);
+    const requeued = await sqs.send(new ReceiveMessageCommand({
+      QueueUrl: requestUrl, MaxNumberOfMessages: 10,
+      WaitTimeSeconds: 2, VisibilityTimeout: 1,
+    }));
+    expect((requeued.Messages ?? []).some(msg => msg.Body?.includes(messageId))).toBe(false);
     await stopApp(app);
   }, 45000);
 
@@ -216,9 +219,10 @@ onlyWithSqs('SQS crash, DLQ and publisher recovery against MiniStack', () => {
       expect(r.status).toBe('PROCESSED');
     }
     const expected = walletIds.length * 2;
+    const walletWhere = 'aggregate_id IN (' + walletIds.map(() => '?').join(', ') + ')';
     const countBefore = await rows<{ n: string }>(seed,
-      'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE aggregate_id = ANY(?::uuid[]) AND published_at IS NULL',
-      [walletIds]);
+      'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE ' + walletWhere + ' AND published_at IS NULL',
+      walletIds);
     expect(Number(countBefore[0].n)).toBe(expected);
     // The first instance stopped before the publisher came online; events remain durable.
     await stopApp(seed);
@@ -227,13 +231,13 @@ onlyWithSqs('SQS crash, DLQ and publisher recovery against MiniStack', () => {
     ]);
     await until(async () => {
       const result = await rows<{ n: string }>(publisherA,
-        'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE aggregate_id = ANY(?::uuid[]) AND published_at IS NOT NULL',
-        [walletIds]);
+        'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE ' + walletWhere + ' AND published_at IS NOT NULL',
+        walletIds);
       return Number(result[0].n) === expected;
     }, 'parallel publishers drain persistent outbox', 30000);
     const pending = await rows<{ n: string }>(publisherA,
-      'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE aggregate_id = ANY(?::uuid[]) AND published_at IS NULL',
-      [walletIds]);
+      'SELECT COUNT(*)::text AS n FROM wager_outbox WHERE ' + walletWhere + ' AND published_at IS NULL',
+      walletIds);
     expect(Number(pending[0].n)).toBe(0);
     for (const walletId of walletIds) {
       expect(await amount(publisherA, walletId)).toBe('99.00');
