@@ -1,0 +1,116 @@
+name: Financial 100-VU baseline
+
+on:
+  push:
+    branches: [feat/wallet-ledger-performance]
+    paths:
+      - .github/workflows/financial-baseline.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle_dev
+          POSTGRES_DB: jungle_wagering_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U jungle -d jungle_wagering_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5434
+      DB_NAME: jungle_wagering_test
+      DB_USER: jungle
+      DB_PASSWORD: jungle_dev
+      SQS_WORKER_ENABLED: "0"
+      OUTBOX_PUBLISHER_ENABLED: "0"
+      REFERENCE_WORKER_ENABLED: "0"
+      BENCH_WALLETS: "120"
+      BENCH_RECONCILIATION_REPORT: artifacts/bench/reconciliation-baseline.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Record environment and apply migrations
+        run: |
+          mkdir -p artifacts/bench
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_OS"
+            echo "bun=$(bun --version)"
+            echo "cores=$(nproc)"
+            echo "memory_kib=$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+            echo "postgres=17-alpine"
+            echo "db_pool_max=10"
+            echo "wallets=120"
+            echo "workload=financial-baseline-100-VUs"
+            echo "profile=1min-ramp-5min-hold-1min-rampdown"
+          } > artifacts/bench/environment-baseline.txt
+          bun run db:migrate
+      - name: Start dedicated financial API
+        run: |
+          bun run src/main.ts > /tmp/jungle-baseline-api.log 2>&1 &
+          echo $! > /tmp/jungle-baseline-api.pid
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3000/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/jungle-baseline-api.log
+          exit 1
+      - name: Seed 120 disposable wallets
+        run: bun scripts/bench/seed-financial.ts
+      - name: Run sustained 100-VU real financial workload and collect CPU RSS FD
+        run: |
+          bash scripts/bench/sample-process.sh "$(cat /tmp/jungle-baseline-api.pid)" 425 artifacts/bench/process-baseline.csv &
+          sampler=$!
+          set +e
+          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
+            run --summary-export=/work/artifacts/bench/k6-baseline.json \
+            -e PROFILE=baseline -e BASE_URL=http://127.0.0.1:3000 \
+            -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
+            /work/scripts/bench/financial.js
+          status=$?
+          wait "$sampler"
+          sample_status=$?
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$sample_status"
+      - name: Reconcile wallets against immutable ledger after 100-VU test
+        if: always()
+        run: |
+          if curl -fsS http://127.0.0.1:3000/health/live >/dev/null; then
+            bun scripts/bench/reconcile-financial.ts
+          else
+            echo "Cannot reconcile: application unavailable after load" >&2
+            exit 1
+          fi
+      - name: Upload raw baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: financial-baseline-100vu
+          path: |
+            artifacts/bench/environment-baseline.txt
+            artifacts/bench/k6-baseline.json
+            artifacts/bench/process-baseline.csv
+            artifacts/bench/reconciliation-baseline.json
+          if-no-files-found: ignore
+      - name: Print diagnostics on failure
+        if: failure()
+        run: tail -n 100 /tmp/jungle-baseline-api.log || true
