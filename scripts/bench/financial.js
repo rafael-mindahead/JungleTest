@@ -12,6 +12,11 @@ const profiles = {
     { duration: '15s', target: 3 },
     { duration: '5s', target: 0 },
   ],
+  pilot: [
+    { duration: '10s', target: 25 },
+    { duration: '40s', target: 25 },
+    { duration: '10s', target: 0 },
+  ],
   baseline: [
     { duration: '1m', target: 100 },
     { duration: '5m', target: 100 },
