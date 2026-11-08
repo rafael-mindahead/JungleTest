@@ -48,6 +48,8 @@ if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(baseUrl) &&
     __ENV.ALLOW_REMOTE_TARGET !== 'yes') {
   throw new Error('Remote load tests require ALLOW_REMOTE_TARGET=yes and explicit authorization');
 }
+const providerToken = __ENV.PROVIDER_TOKEN;
+if (!providerToken) throw new Error('PROVIDER_TOKEN is required for authenticated financial load tests');
 const wallets = new SharedArray('financial-seeded-wallets', function () {
   return JSON.parse(open(__ENV.FIXTURE_PATH || '../../artifacts/bench/wallets.json'));
 });
@@ -94,7 +96,8 @@ function submit(wallet, kind, amount, identity, referenceExternalTransactionId) 
     baseUrl + '/wagering/transactions',
     JSON.stringify(body),
     {
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key,
+        Authorization: 'Bearer ' + providerToken },
       tags: { operation: kind },
       timeout: '10s',
     },

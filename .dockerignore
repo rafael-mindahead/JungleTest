@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+artifacts
+test
+docs
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

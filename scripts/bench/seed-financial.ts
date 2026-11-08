@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 
 const baseUrl = (process.env.BASE_URL ?? 'http://127.0.0.1:3000').replace(/\/$/, '');
+const adminToken = process.env.ADMIN_TOKEN;
+if (!adminToken) throw new Error('ADMIN_TOKEN is required to seed wallets via authenticated API');
+const providerId = process.env.BENCH_PROVIDER_ID ?? 'bench-provider';
+if (!/^[A-Za-z0-9_-]{1,80}$/.test(providerId)) throw new Error('Invalid BENCH_PROVIDER_ID');
 const count = Number(process.env.BENCH_WALLETS ?? '12');
 const output = process.env.BENCH_FIXTURE_FILE ?? 'artifacts/bench/wallets.json';
 if (!process.env.DB_NAME?.endsWith('_test')) {
@@ -22,7 +26,7 @@ await Promise.all(Array.from({ length: workerCount }, async (_, workerIndex) => 
     const playerId = randomUUID();
     const response = await fetch(baseUrl + '/wallets', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + adminToken },
       body: JSON.stringify({
         playerId,
         initialBalance: { amount: '1000.00', currency: 'BRL' },
@@ -37,7 +41,7 @@ await Promise.all(Array.from({ length: workerCount }, async (_, workerIndex) => 
     fixtures.push({
       walletId: created.id,
       playerId,
-      providerId: 'bench-' + created.id,
+      providerId,
     });
   }
 }));

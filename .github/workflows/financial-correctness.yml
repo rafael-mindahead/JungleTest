@@ -54,6 +54,12 @@ jobs:
         run: bun run test:domain
       - name: Apply real PostgreSQL migrations
         run: bun run db:migrate
+      - name: Verify reversible migrations on disposable PostgreSQL
+        run: |
+          bun run db:down
+          bun run db:down
+          bun run db:down
+          bun run db:migrate
       - name: Real PostgreSQL financial API and concurrency tests
         run: bun run test:integration
       - name: RS256 OIDC and provider authorization security integration

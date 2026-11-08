@@ -1,6 +1,8 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 
 const baseUrl = (process.env.BASE_URL ?? 'http://127.0.0.1:3000').replace(/\/$/, '');
+const adminToken = process.env.ADMIN_TOKEN;
+if (!adminToken) throw new Error('ADMIN_TOKEN is required to reconcile wallets');
 const fixturePath = process.env.BENCH_FIXTURE_FILE ?? 'artifacts/bench/wallets.json';
 const reportPath = process.env.BENCH_RECONCILIATION_REPORT ?? 'artifacts/bench/reconciliation.json';
 if (!process.env.DB_NAME?.endsWith('_test') ||
@@ -14,6 +16,7 @@ let checkedEntries = 0;
 for (const fixture of fixtures) {
   const result = await fetch(baseUrl + '/wallets/' + fixture.walletId + '/reconciliation', {
     method: 'POST',
+    headers: { Authorization: 'Bearer ' + adminToken },
     signal: AbortSignal.timeout(15000),
   });
   if (result.status !== 201) {

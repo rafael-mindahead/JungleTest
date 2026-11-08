@@ -1,10 +1,7 @@
 name: Financial 100-VU baseline
 
+# Deliberately manual: load testing is optional, not a commit gate.
 on:
-  push:
-    branches: [feat/wallet-ledger-performance]
-    paths:
-      - .github/workflows/financial-baseline.yml
   workflow_dispatch:
 
 permissions:
@@ -38,12 +35,23 @@ jobs:
       OUTBOX_PUBLISHER_ENABLED: "0"
       REFERENCE_WORKER_ENABLED: "0"
       BENCH_WALLETS: "120"
+      BENCH_PROVIDER_ID: bench-provider
+      # Manual runs need a reachable external IdP and short-lived credentials.
+      OIDC_ISSUER: ${{ vars.JUNGLE_OIDC_ISSUER }}
+      OIDC_AUDIENCE: ${{ vars.JUNGLE_OIDC_AUDIENCE }}
+      OIDC_JWKS_URI: ${{ vars.JUNGLE_OIDC_JWKS_URI }}
+      ADMIN_TOKEN: ${{ secrets.JUNGLE_BENCH_ADMIN_TOKEN }}
+      PROVIDER_TOKEN: ${{ secrets.JUNGLE_BENCH_PROVIDER_TOKEN }}
       BENCH_RECONCILIATION_REPORT: artifacts/bench/reconciliation-baseline.json
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
+      - name: Check manual OIDC benchmark prerequisites
+        run: |
+          test -n "$OIDC_ISSUER" && test -n "$OIDC_AUDIENCE" && test -n "$OIDC_JWKS_URI"
+          test -n "$ADMIN_TOKEN" && test -n "$PROVIDER_TOKEN"
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
       - name: Record environment and apply migrations
@@ -81,12 +89,17 @@ jobs:
           bash scripts/bench/sample-process.sh "$(cat /tmp/jungle-baseline-api.pid)" 425 artifacts/bench/process-baseline.csv &
           sampler=$!
           set +e
-          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
+          docker run --rm --user "$(id -u):$(id -g)" --network host -v "$PWD:/work" -w /work grafana/k6:latest \
             run --summary-export=/work/artifacts/bench/k6-baseline.json \
             -e PROFILE=baseline -e BASE_URL=http://127.0.0.1:3000 \
+            -e PROVIDER_TOKEN="$PROVIDER_TOKEN" \
             -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
             /work/scripts/bench/financial.js
           status=$?
+          if [ "$status" -eq 0 ] && [ ! -s artifacts/bench/k6-baseline.json ]; then
+            echo "k6 summary JSON missing; refusing incomplete evidence" >&2
+            status=1
+          fi
           wait "$sampler"
           sample_status=$?
           if [ "$status" -ne 0 ]; then exit "$status"; fi
@@ -110,7 +123,7 @@ jobs:
             artifacts/bench/k6-baseline.json
             artifacts/bench/process-baseline.csv
             artifacts/bench/reconciliation-baseline.json
-          if-no-files-found: ignore
+          if-no-files-found: error
       - name: Print diagnostics on failure
         if: failure()
         run: tail -n 100 /tmp/jungle-baseline-api.log || true
