@@ -5,7 +5,7 @@ import {
   CreateQueueCommand, DeleteMessageCommand, GetQueueUrlCommand, ReceiveMessageCommand,
   SendMessageCommand, SQSClient,
 } from '@aws-sdk/client-sqs';
-import type { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import type { EntityManager, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { WageringService } from './wagering.service.js';
 
 interface OutboxRow {
@@ -100,7 +100,8 @@ export class WagerWorkers implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   private async claimOutbox(limit: number): Promise<OutboxRow[]> {
-    return this.orm.em.fork().transactional(async (em) => {
+    return this.orm.em.fork().transactional(async (em0) => {
+      const em = em0 as unknown as EntityManager<PostgreSqlDriver>;
       const rows = await em.execute<OutboxRow[]>([
         'SELECT id, aggregate_id, event_type, payload FROM wager_outbox',
         'WHERE published_at IS NULL AND next_attempt_at <= NOW()',

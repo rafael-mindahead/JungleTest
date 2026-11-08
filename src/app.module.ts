@@ -8,11 +8,13 @@ import { PostgresWalletRepository } from './infrastructure/wallets/postgres-wall
 import { WalletsController } from './wagering/wallets.controller.js';
 import { WageringController } from './wagering/wagering.controller.js';
 import { WageringService } from './wagering/wagering.service.js';
+import { WagerWorkers } from './wagering/wager-workers.service.js';
 
 @Module({
   imports: [MikroOrmModule.forRoot(ormConfig), HealthModule],
   providers: [
     WageringService,
+    WagerWorkers,
     {
       provide: PostgresWalletRepository,
       useFactory: (orm: MikroORM) => new PostgresWalletRepository(orm as unknown as MikroORM<PostgreSqlDriver>),
