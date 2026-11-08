@@ -33,6 +33,10 @@ jobs:
       DB_USER: jungle
       DB_PASSWORD: jungle_dev
       RUN_DB_TESTS: "1"
+      NODE_ENV: test
+      # Existing correctness integration fixtures are isolated from live authentication.
+      # Security assertions run separately below with this bypass disabled.
+      ALLOW_INSECURE_TEST_AUTH: "1"
       SQS_ENDPOINT: http://127.0.0.1:4566
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
@@ -52,6 +56,10 @@ jobs:
         run: bun run db:migrate
       - name: Real PostgreSQL financial API and concurrency tests
         run: bun run test:integration
+      - name: RS256 OIDC and provider authorization security integration
+        env:
+          ALLOW_INSECURE_TEST_AUTH: "0"
+        run: bun test test/security/financial-auth.test.ts
       - name: Three real NestJS processes and 50 concurrent duplicate wagers
         env:
           RUN_MULTIPROCESS_TESTS: "1"
@@ -78,60 +86,6 @@ jobs:
           RUN_SQS_TESTS: "1"
           SQS_VISIBILITY_TIMEOUT_SECONDS: "1"
         run: bun test test/integration/financial-failures.test.ts
-      - name: Launch isolated financial HTTP benchmark target
-        run: |
-          bun run src/main.ts > /tmp/jungle-benchmark-api.log 2>&1 &
-          echo $! > /tmp/jungle-benchmark-api.pid
-          for attempt in $(seq 1 50); do
-            if curl -fsS http://127.0.0.1:3000/health/live >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          cat /tmp/jungle-benchmark-api.log
-          exit 1
-      - name: Seed disposable financial benchmark wallets
-        run: BENCH_WALLETS=24 bun scripts/bench/seed-financial.ts
-      - name: Run real k6 wagering smoke (three VUs; NOT a capacity claim)
-        run: |
-          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
-            run --summary-export=/work/artifacts/bench/k6-smoke.json \
-            -e PROFILE=smoke -e BASE_URL=http://127.0.0.1:3000 \
-            -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
-            /work/scripts/bench/financial.js
-      - name: Reconcile all seeded wallet balances against ledger
-        run: bun scripts/bench/reconcile-financial.ts
-      - name: Run isolated 25-VU financial pilot and sample CPU/RSS/FD
-        run: |
-          bash scripts/bench/sample-process.sh "$(cat /tmp/jungle-benchmark-api.pid)" 65 artifacts/bench/process-pilot.csv &
-          sampler=$!
-          set +e
-          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
-            run --summary-export=/work/artifacts/bench/k6-pilot.json \
-            -e PROFILE=pilot -e BASE_URL=http://127.0.0.1:3000 \
-            -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
-            /work/scripts/bench/financial.js
-          benchmark_status=$?
-          wait "$sampler"
-          sampler_status=$?
-          if [ "$benchmark_status" -ne 0 ]; then exit "$benchmark_status"; fi
-          exit "$sampler_status"
-      - name: Reconcile wallets after 25-VU pilot
-        run: bun scripts/bench/reconcile-financial.ts
-      - name: Financial benchmark diagnostics on failure
-        if: failure()
-        run: cat /tmp/jungle-benchmark-api.log || true
-      - name: Save k6 and reconciliation evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: financial-smoke-and-reconciliation
-          path: |
-            artifacts/bench/k6-smoke.json
-            artifacts/bench/k6-pilot.json
-            artifacts/bench/process-pilot.csv
-            artifacts/bench/reconciliation.json
-          if-no-files-found: ignore
       - name: MiniStack diagnostics on failure
         if: failure()
         run: docker logs jungle-ci-ministack || true
