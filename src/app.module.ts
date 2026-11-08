@@ -11,11 +11,14 @@ import { WageringService } from './wagering/wagering.service.js';
 import { WagerWorkers } from './wagering/wager-workers.service.js';
 import { FinancialMetrics } from './observability/financial-metrics.service.js';
 import { FinancialMetricsController } from './observability/financial-metrics.controller.js';
+import { IdentityGuard, OidcTokenVerifier } from './security/identity.guard.js';
 
 @Module({
   imports: [MikroOrmModule.forRoot(ormConfig), HealthModule],
   providers: [
     FinancialMetrics,
+    OidcTokenVerifier,
+    IdentityGuard,
     WageringService,
     WagerWorkers,
     {
