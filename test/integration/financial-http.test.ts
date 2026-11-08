@@ -218,4 +218,25 @@ integrationDescribe('Financial HTTP API against real PostgreSQL', () => {
     expect(inbox).toHaveLength(1);
     expect(inbox[0].transaction_id).toBe(first.transactionId);
   });
+  test('reconciliation remains consistent while independent HTTP wagers commit', async () => {
+    const scope = await createWallet('100.00');
+    const operations = Array.from({ length: 12 }, () =>
+      post(wager(scope, 'BET', '1.00')));
+    const snapshots = Array.from({ length: 12 }, () =>
+      request(app.getHttpServer())
+        .post('/wallets/' + scope.walletId + '/reconciliation')
+        .expect(201));
+    const [wagers, reconciliations] = await Promise.all([
+      Promise.all(operations), Promise.all(snapshots),
+    ]);
+    expect(wagers.every(response => response.status === 200)).toBe(true);
+    expect(reconciliations.every(response => response.body.consistent === true)).toBe(true);
+    const final = await request(app.getHttpServer())
+      .post('/wallets/' + scope.walletId + '/reconciliation').expect(201);
+    expect(final.body.consistent).toBe(true);
+    expect(final.body.storedBalance.amount).toBe('88.00');
+    expect(final.body.calculatedBalance.amount).toBe('88.00');
+    expect(await count('wallet_ledger_entries', scope.walletId)).toBe(13);
+  });
+
 });
