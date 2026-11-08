@@ -2,7 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Money } from '../domain/shared/value-objects/money.js';
 import type { WagerKind } from '../domain/wagering/wager-transaction.js';
 
-const UUID_RE = /^[a-f\\d]{8}(-[a-f\\d]{4}){3}-[a-f\\d]{12}$/i;
+const UUID_RE = /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 export interface WagerInput {
   providerId: string; externalTransactionId: string; playerId: string;
