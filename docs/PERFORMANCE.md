@@ -1,51 +1,42 @@
-# Performance engineering laboratory
+# Financial performance benchmark
 
-## Priorities
+## What the tests mean
 
-Financial correctness is a release gate. Zero duplicate posted debits, zero negative wallet balances, and consistent wallet/ledger snapshots must hold **before** accepting any throughput result. A benchmark on `/health/live` proves HTTP stack overhead only, never wagering capacity.
+There are two separate workload scripts:
+- `scripts/bench/http-health.js`: measures **only HTTP transport** through `/health/live`.
+- `scripts/bench/financial.js`: exercises **real PostgreSQL financial transactions** (BET, WIN, LOSS, REFUND, ROLLBACK plus idempotent replays) through the NestJS API.
 
-## Performance target (internal, not an official Jungle Gaming threshold)
+The Jungle Gaming challenge has **no official minimum RPS or 100k/200k-VU goal**. The 5-minute p95 under 500 ms, p99 under 1000 ms and technical error rate under 1% are our **internal** budgets. Correctness, idempotency and consistency always outweigh throughput.
 
-- Sustained 5-minute steady-state measurement at each load level.
-- Request latency: **p95 below 500 ms**, **p99 below 1000 ms**.
-- Technical error rate **below 1%**, measured separately from valid business rejections.
-- CPU: record total process CPU normalized by available cores, monitor throttling and event-loop stalls; investigate >85% sustained utilization as a risk, not an automatic failure without hardware details.
-- Memory: record RSS/heap, GC, and growth at constant traffic. Investigate >10% steady-state RSS growth over the final 3 minutes after warm-up.
-- Descriptors: record file descriptors, connections to Postgres/SQS, and operating-system ulimit. Investigate growth with stable traffic and warn if descriptor use exceeds 70% of configured limit.
-- Durability: do not disable PostgreSQL WAL or synchronous commits merely to increase performance scores.
+## Local preparation (disposable test database)
 
-## Reproducible stages
-
-1. `smoke`: 5 virtual users, basic connectivity.
-2. `baseline`: 100 VUs for 5 minutes, resource baseline.
-3. `ramp`: 1,000 VUs, bottleneck discovery (no premature performance target).
-4. `peak100k`: 100,000 VUs, five-minute steady state (requires explicit opt-in and adequate distributed generation).
-5. `peak200k`: 200,000 VUs, five-minute steady state (requires explicit opt-in and adequate distributed generation).
-
-Virtual users are not simultaneously executing HTTP requests. With a 5-second think time and negligible latency, 100k VUs may yield roughly 20k requests/second; 200k VUs roughly 40k. Real RPS depends on latency, client resources, think time, and the workload. If the client load generator saturates, results are invalid and the generators must be distributed.
-
-## Run today: HTTP-only baseline
-
-Start the API locally, then install k6 (e.g. `brew install k6`) and run:
+Start PostgreSQL (and optional MiniStack), create the test DB once, run migrations, start a dedicated API using `DB_NAME=jungle_wagering_test` and leave it running. Do NOT point scripts at production.
 
 ```bash
-PROFILE=smoke k6 run scripts/bench/http-health.js
-PROFILE=baseline BASE_URL=http://127.0.0.1:3000 k6 run scripts/bench/http-health.js
+docker compose up -d
+docker compose exec -T postgres psql -U jungle -d postgres -c "CREATE DATABASE jungle_wagering_test"
+DB_NAME=jungle_wagering_test bun run db:migrate
+DB_NAME=jungle_wagering_test bun run src/main.ts
 ```
 
-Sample server process CPU, RSS (KiB), and FD count in a separate terminal:
+In a second terminal:
 
 ```bash
-pgrep -fl bun
-bash scripts/bench/sample-process.sh <BUN_SERVER_PID> 300 artifacts/bench/process.csv
+DB_NAME=jungle_wagering_test BENCH_WALLETS=12 bun scripts/bench/seed-financial.ts
+PROFILE=smoke k6 run scripts/bench/financial.js
+DB_NAME=jungle_wagering_test bun scripts/bench/reconcile-financial.ts
 ```
 
-Do not execute `peak100k` or `peak200k` on an unprepared machine. They are disabled unless `CONFIRM_PEAK=yes`, which is still **not** a resource guarantee. Use only controlled infrastructure with permission to load test it. Docker-based k6 runners can use `host.docker.internal` as the target on Docker Desktop.
+`bun run test:load` invokes the same k6 script (requires k6 installed). The seed tool generates unique wallets with opening balance `1000.00 BRL`, creates `artifacts/bench/wallets.json`, and restricts seeding to a local `*_test` database. The reconciliation tool queries the financial API after load and fails if even one stored wallet balance differs from the append-only ledger reconstruction.
 
-## Financial workload: not implemented yet
+The financial script has `smoke` (3 VUs), `baseline` (100 VUs), `ramp` (1000 VUs), and gated `peak100k`/`peak200k` profiles. `CONFIRM_PEAK=yes` is necessary but not proof the load generator can sustain those users. Many wallets may share a small number of VUs; the fixture must be sized for meaningful wallet concurrency. `HOT_WALLET` is not implied by this script; to test a hot wallet, seed one wallet explicitly and use that fixture.
 
-After authenticated wager endpoints and durable SQS Inbox/Outbox exist, add a separate k6 workload with deterministic actors, different-wallet traffic, same-wallet contention, BET/WIN/LOSS/REFUND/ROLLBACK distribution, duplicate events, and business-rejection classification. Snapshot balance invariants and ledger reconciliation **after** the load run. Do not represent the existing health benchmark as financial capacity.
+The k6 mix is one BET per iteration followed by WIN, LOSS, REFUND or ROLLBACK and a periodic duplicate. Business rejections (HTTP 422) are counted separately from transport/technical failures. Successful operations are tracked by the `financial_processed_operations` counter. See emitted k6 metrics for p50/p95/p99 and requests/s, and collect CPU/RSS/file descriptors separately using `scripts/bench/sample-process.sh`.
 
-## Benchmark report checklist
+**Limitations:** This benchmark exercises financial HTTP and PostgreSQL; the asynchronous SQS worker and publication of Outbox messages are validated by separate integration tests, not measured for throughput in the load script. The test database must be isolated and the API must have worker loops disabled unless a specific all-components experiment is intended.
 
-Record commit SHA, Bun version, PostgreSQL version/settings, kernel/OS, CPU and RAM limits, app instance count, DB pool, DB WAL settings, k6 generator topology, test data volume, warm-up time, precise request mix, p50/p95/p99, RPS, errors, CPU per core, peak/steady RSS, GC, FD counts, DB lock wait times, connection counts, and invariant checks. Attach raw CSV/JSON traces where possible, and explicitly distinguish observed vs target metrics.
+## Reproducible measurements
+
+Use the workflow in `.github/workflows/financial-correctness.yml` for the short financial smoke; GitHub Actions uploads the k6 summary and wallet reconciliation report as artifacts. **A successful smoke is evidence of request correctness under a small load, not a 5-minute baseline, not a production throughput claim, and not 100k/200k VUs.**
+
+For larger experiments record commit SHA, Bun/runtime/kernel version, CPU/RAM, PostgreSQL/WAL settings, connection pool, k6 generator topology, wallets seeded, traffic mix, warm-up, exact VU and RPS, p50/p95/p99, technical and business failure rates, CPU/RSS/GC/FD, DB contention and Outbox lag. Reconcile all wallets after the run. Do not suppress PostgreSQL WAL or synchronous commits for speed.

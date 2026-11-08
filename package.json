@@ -27,7 +27,8 @@
     "db:migrate": "mikro-orm migration:up",
     "db:down": "mikro-orm migration:down",
     "sqs:setup": "bun scripts/setup-sqs.ts",
-    "test:integration": "RUN_DB_TESTS=1 bun test test/integration"
+    "test:integration": "RUN_DB_TESTS=1 bun test test/integration",
+    "test:load": "k6 run scripts/bench/financial.js"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1164.0",

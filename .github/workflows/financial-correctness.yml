@@ -78,6 +78,41 @@ jobs:
           RUN_SQS_TESTS: "1"
           SQS_VISIBILITY_TIMEOUT_SECONDS: "1"
         run: bun test test/integration/financial-failures.test.ts
+      - name: Launch isolated financial HTTP benchmark target
+        run: |
+          bun run src/main.ts > /tmp/jungle-benchmark-api.log 2>&1 &
+          echo $! > /tmp/jungle-benchmark-api.pid
+          for attempt in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:3000/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/jungle-benchmark-api.log
+          exit 1
+      - name: Seed disposable financial benchmark wallets
+        run: BENCH_WALLETS=6 bun scripts/bench/seed-financial.ts
+      - name: Run real k6 wagering smoke (three VUs; NOT a capacity claim)
+        run: |
+          docker run --rm --network host -v "$PWD:/work" -w /work grafana/k6:latest \
+            run --summary-export=/work/artifacts/bench/k6-smoke.json \
+            -e PROFILE=smoke -e BASE_URL=http://127.0.0.1:3000 \
+            -e FIXTURE_PATH=/work/artifacts/bench/wallets.json \
+            /work/scripts/bench/financial.js
+      - name: Reconcile all seeded wallet balances against ledger
+        run: bun scripts/bench/reconcile-financial.ts
+      - name: Financial benchmark diagnostics on failure
+        if: failure()
+        run: cat /tmp/jungle-benchmark-api.log || true
+      - name: Save k6 and reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: financial-smoke-and-reconciliation
+          path: |
+            artifacts/bench/k6-smoke.json
+            artifacts/bench/reconciliation.json
+          if-no-files-found: ignore
       - name: MiniStack diagnostics on failure
         if: failure()
         run: docker logs jungle-ci-ministack || true
