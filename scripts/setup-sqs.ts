@@ -65,6 +65,11 @@ async function main(): Promise<void> {
       }),
     );
 
+    const eventsQueue = await client.send(new CreateQueueCommand({
+      QueueName: process.env.SQS_EVENTS_QUEUE_NAME ?? 'wager-events.fifo',
+      Attributes: { FifoQueue: 'true', ContentBasedDeduplication: 'false' },
+    }));
+    console.log('Events queue:', eventsQueue.QueueUrl);
     console.log('DLQ:', dlq.QueueUrl);
     console.log('Main queue:', queue.QueueUrl);
     console.log('SQS setup completed');

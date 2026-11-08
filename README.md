@@ -1,132 +1,91 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# JungleTest — Distributed Wagering Processor
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Implementação do [desafio financeiro oficial da Jungle Gaming](https://github.com/junglegaming/backend-challenge) com foco em integridade monetária e concorrência distribuída. **Protótipo de avaliação, não serviço financeiro pronto para internet pública.**
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+**Stack:** Bun 1.4.4 · NestJS 12 · TypeScript strict · MikroORM 7 · PostgreSQL 17 · SQS FIFO via MiniStack · Docker Compose.
 
-## Description
+## O que foi construído
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- `Money` decimal imutável, `Wallet`, ledger append-only, constraints e reconciliação em snapshot `REPEATABLE READ`.
+- `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`, rejeições auditáveis e referências `PENDING_REFERENCE` com retry/backoff.
+- Idempotência persistente no PostgreSQL, hash canônico, Inbox, Outbox transacional, ACK pós-commit, DLQ e recuperação.
+- API HTTP protegida por JWT RS256 de **IdP externo**: administrador gerencia carteiras; provedores só submetem/consultam suas operações.
+- Testes reais de concorrência entre **três processos**, crash após commit, dois publishers, MiniStack SQS e regressões HTTP.
+- Métricas operacionais JSON protegidas, erros HTTP padronizados, correlation ID por requisição e logs JSON sem dados financeiros. Testes k6 permanecem opcionais; não há exigência de 100 mil/200 mil usuários.
 
-## Project setup
+## Evidências verificadas
+
+[Último CI de correção](https://github.com/rafael-mindahead/JungleTest/actions) executa typecheck, migrations PostgreSQL e reversão, integração HTTP/DB, autorização RS256, três processos e fila MiniStack. Os testes cobrem estado da transação, validação compartilhada HTTP/SQS, contratos de erro, concorrência financeira, autenticação, MiniStack SQS e reversão de migrations. Consulte a última execução verde para conferir a contagem exata.
+
+No [benchmark pré-autenticação com 100 VUs](https://github.com/rafael-mindahead/JungleTest/actions/runs/42503672224), foram registradas **279.431 requisições em 7 minutos (rampas incluídas)**, média **665,01 RPS**, **p95 54,45 ms**, **p99 69,78 ms** e **0% de erros técnicos**, com reconciliação final aprovada. **Não é evidência de escala em produção nem de throughput após JWT**. A exportação do resumo JSON falhou por permissão do container; os números citados estão nos logs, e o workflow agora exige o arquivo em futuras execuções. Não serão feitos novos testes de carga automaticamente.
+
+## Rodando dependências e testes
+
+Requisitos: Bun 1.x e Docker Compose.
 
 ```bash
-$ bun install
+bun install --frozen-lockfile
+docker compose up -d
+bun run sqs:setup
+bun run db:migrate
+bun run typecheck
+bun run test:domain
 ```
 
-## Compile and run the project
+Para integração, use **exclusivamente** um banco descartável cujo nome termine em `_test`:
 
 ```bash
-# development
-$ bun run start
-
-# watch mode
-$ bun run start:dev
-
-# production mode
-$ bun run start:prod
+docker compose exec -T postgres psql -U jungle -d postgres -c "CREATE DATABASE jungle_wagering_test"
+DB_NAME=jungle_wagering_test bun run db:migrate
+DB_NAME=jungle_wagering_test NODE_ENV=test ALLOW_INSECURE_TEST_AUTH=1 bun run test:integration
+DB_NAME=jungle_wagering_test NODE_ENV=test RUN_DB_TESTS=1 ALLOW_INSECURE_TEST_AUTH=0 bun test test/security/financial-auth.test.ts
 ```
 
-## Run tests
+O bypass existe **apenas** para testes com `NODE_ENV=test` e banco `*_test`; ele não libera endpoints em desenvolvimento/produção. O CI realiza os testes SQS com MiniStack isolado.
+
+## HTTP e identidade
+
+Configure `OIDC_ISSUER`, `OIDC_AUDIENCE` e `OIDC_JWKS_URI` para um **IdP externo** com HTTPS e tokens RS256. Os claims esperados são `realm_access.roles` com `jungle-admin` ou `jungle-provider`; para provedores, também `provider_id`. Sem IdP configurado, as rotas protegidas recusam acesso.
+
+| Rota | Papel |
+|---|---|
+| `GET /health/live`, `GET /health/ready` | pública |
+| `POST /wallets`, `GET /wallets/:walletId` | admin |
+| `GET /wallets/:walletId/ledger`, `POST /wallets/:walletId/reconciliation` | admin |
+| `POST /wagering/transactions` | provedor proprietário, com `Idempotency-Key` |
+| `GET /providers/:providerId/wagering/transactions/:externalTransactionId` | mesmo provedor ou admin |
+| `GET /wagering/transactions/:transactionId` | admin |
+| `GET /internal/metrics` | `X-Metrics-Token` configurado |
+
+Worker loops são opt-in com `SQS_WORKER_ENABLED=1`, `OUTBOX_PUBLISHER_ENABLED=1` e `REFERENCE_WORKER_ENABLED=1`.
+
+## Docker Compose de três instâncias
+
+O Compose base sobe PostgreSQL e MiniStack. Para demonstrar **três instâncias** com migrations e filas inicializadas, configure primeiro um IdP externo acessível pelos containers e rode:
 
 ```bash
-# unit tests
-$ bun run test
-
-# e2e tests
-$ bun run test:e2e
-
-# test coverage
-$ bun run test:cov
+export OIDC_ISSUER="https://seu-idp.example/realms/jungle"
+export OIDC_AUDIENCE="jungle-financial-api"
+export OIDC_JWKS_URI="https://seu-idp.example/realms/jungle/protocol/openid-connect/certs"
+docker compose -f docker-compose.yml -f docker-compose.cluster.yml up -d --build
 ```
 
-## Deployment
+A API estará nas portas locais 3001, 3002 e 3003. Os valores `jungle_dev` e `test` do Compose são **somente para laboratório**; não use esses segredos em produção. O Compose não sobe Keycloak automaticamente e não substitui testes de integração com um IdP real.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Último refinamento técnico
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Três melhorias inspiradas pela inspeção crítica da solução concorrente, implementadas sem copiar sua arquitetura:
 
-```bash
-$ bun install -g @nestjs/mau
-$ mau deploy
-```
+- **Agregado de transação** em `src/domain/wagering/wager-transaction.ts`: as transições de `PENDING`, `PENDING_REFERENCE` e estados terminais são validadas no domínio e aplicadas pelo serviço dentro da mesma transação SQL; checagem de tipos de referência foi centralizada. A persistência ainda é feita pelo `WageringService` (não existe Unit of Work/repositório próprio de WagerTransaction).
+- **Contrato compartilhado** em `src/wagering/wager-input.ts`: validações de moeda, tipo, UUID, referência obrigatória e autorreferência são as mesmas para HTTP e SQS, sem alterar a idempotência. A concorrente utiliza Zod; optamos por funções tipadas sem dependência adicional.
+- **Observabilidade HTTP** em `src/observability/http-observability.ts`: `X-Correlation-Id`, logs estruturados JSON contendo apenas template da rota, status e latência; erros `{error:{code,message,correlationId}}`, sem divulgar detalhes de falhas internas. Desative logs de acesso com `HTTP_ACCESS_LOGS=0` quando necessário. Ainda não adotamos Prometheus/OpenTelemetry.
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Encerramento do desafio
 
-## Observability
+- [Auditoria item a item e faixa de nota estimada](docs/REQUIREMENTS_AUDIT.md)
+- [Versus com a concorrente, ganhos e perdas](docs/COMPARISON.md)
+- [Arquitetura, escolhas e limitações](ARCHITECTURE.md)
+- [Relatório e metodologia de performance opcional](docs/PERFORMANCE.md)
+- [Invariantes transacionais](docs/TRANSACTIONAL-INVARIANTS.md)
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
-
-```bash
-$ npx @nestjs/observe link
-```
-
-It installs `@nestjs/observe`, wires it into `AppModule` and `main.ts`, and writes the app key and secret into `.env`, which every `nest start` script (`start`, `start:dev`, `start:debug`) then loads. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
-
-Or do it by hand:
-
-```bash
-$ bun install @nestjs/observe
-```
-
-Then follow the [setup guide](https://docs.nestjs.com/observability/sdk) - it takes a single import and an app key.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**O PR permanece em rascunho até a última verificação do CI e revisão humana.** Não faremos merge automático na `main`.

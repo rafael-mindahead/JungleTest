@@ -6,6 +6,7 @@ import { ReflectMetadataProvider } from '@mikro-orm/decorators/legacy';
 import { Migrator } from '@mikro-orm/migrations';
 
 import { WalletRecord } from './entities/wallet-record.entity.js';
+import { WalletLedgerRecord } from './entities/wallet-ledger-record.entity.js';
 
 export default defineConfig({
   host: process.env.DB_HOST ?? '127.0.0.1',
@@ -14,18 +15,19 @@ export default defineConfig({
   user: process.env.DB_USER ?? 'jungle',
   password: process.env.DB_PASSWORD ?? 'jungle_dev',
 
-  entities: [WalletRecord],
+  entities: [WalletRecord, WalletLedgerRecord],
 
   metadataProvider: ReflectMetadataProvider,
 
   extensions: [Migrator],
 
   migrations: {
-    path: './dist/database/migrations',
+    path: './dist/src/database/migrations',
     pathTs: './src/database/migrations',
     emit: 'ts',
     transactional: true,
     allOrNothing: true,
+    dropTables: false,
   },
 
   pool: {

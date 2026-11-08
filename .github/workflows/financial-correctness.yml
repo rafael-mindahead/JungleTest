@@ -1,0 +1,109 @@
+name: Financial correctness CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  domain-and-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle_dev
+          POSTGRES_DB: jungle_wagering_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U jungle -d jungle_wagering_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5434
+      DB_NAME: jungle_wagering_test
+      DB_USER: jungle
+      DB_PASSWORD: jungle_dev
+      RUN_DB_TESTS: "1"
+      NODE_ENV: test
+      # Existing correctness integration fixtures are isolated from live authentication.
+      # Security assertions run separately below with this bypass disabled.
+      ALLOW_INSECURE_TEST_AUTH: "1"
+      SQS_ENDPOINT: http://127.0.0.1:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Validate three-instance Compose configuration
+        env:
+          OIDC_ISSUER: https://issuer.example.test/realms/jungle
+          OIDC_AUDIENCE: jungle-financial-api
+          OIDC_JWKS_URI: https://issuer.example.test/realms/jungle/certs
+        run: docker compose -f docker-compose.yml -f docker-compose.cluster.yml config --quiet
+      - name: Build reproducible Bun application image
+        run: docker build -t jungle-wagering:ci .
+      - name: TypeScript static validation
+        run: bun run typecheck
+      - name: Money and Wallet unit tests
+        run: bun run test:domain
+      - name: Validate HTTP and message input contracts
+        run: bun test test/contract
+      - name: Test request correlation and stable error codes
+        run: bun test src/observability/http-observability.test.ts
+      - name: Apply real PostgreSQL migrations
+        run: bun run db:migrate
+      - name: Verify reversible migrations on disposable PostgreSQL
+        run: |
+          bun run db:down
+          bun run db:down
+          bun run db:down
+          bun run db:migrate
+      - name: Real PostgreSQL financial API and concurrency tests
+        run: bun run test:integration
+      - name: RS256 OIDC and provider authorization security integration
+        env:
+          ALLOW_INSECURE_TEST_AUTH: "0"
+        run: bun test test/security/financial-auth.test.ts
+      - name: Three real NestJS processes and 50 concurrent duplicate wagers
+        env:
+          RUN_MULTIPROCESS_TESTS: "1"
+        run: bun test test/integration/financial-multiprocess.test.ts
+      - name: Start MiniStack SQS emulator
+        run: |
+          docker run --rm -d --name jungle-ci-ministack -p 127.0.0.1:4566:4566 ministackorg/ministack:latest
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:4566/_ministack/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs jungle-ci-ministack
+          exit 1
+      - name: Provision FIFO queues and dead-letter queue
+        run: bun run sqs:setup
+      - name: End-to-end FIFO SQS Inbox and Outbox test
+        env:
+          RUN_SQS_TESTS: "1"
+        run: bun test test/integration/financial-sqs.test.ts
+      - name: Simulated post-commit crash, poison-message DLQ and concurrent Outbox publishers
+        env:
+          RUN_SQS_TESTS: "1"
+          SQS_VISIBILITY_TIMEOUT_SECONDS: "1"
+        run: bun test test/integration/financial-failures.test.ts
+      - name: MiniStack diagnostics on failure
+        if: failure()
+        run: docker logs jungle-ci-ministack || true
